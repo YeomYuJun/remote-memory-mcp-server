@@ -1,0 +1,33 @@
+{
+  "name": "remote-memory-mcp",
+  "version": "1.0.0",
+  "description": "GitHub 연동 원격 메모리 관리 MCP 서버",
+  "type": "module",
+  "main": "dist/index.js",
+  "bin": {
+    "remote-memory-mcp": "dist/index.js"
+  },
+  "scripts": {
+    "build": "tsc",
+    "dev": "tsx src/index.ts",
+    "start": "node dist/index.js",
+    "prepare": "npm run build"
+  },
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.0.0",
+    "@octokit/rest": "^20.0.2",
+    "js-base64": "^3.7.5"
+  },
+  "devDependencies": {
+    "@types/node": "^20.0.0",
+    "tsx": "^4.0.0",
+    "typescript": "^5.0.0"
+  },
+  "keywords": [
+    "mcp",
+    "memory",
+    "github",
+    "knowledge-graph",
+    "remote-storage"
+  ]
+}
