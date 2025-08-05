@@ -52,7 +52,7 @@ export class SyncManager {
     }
   }
 
-  async pushToRemote(): Promise<SyncResult> {
+  async pushToRemote(commitMessage?: string): Promise<SyncResult> {
     try {
       const localData = this.memoryManager.toJSON();
       const content = JSON.stringify(localData, null, 2);
@@ -60,13 +60,15 @@ export class SyncManager {
       // 현재 파일의 SHA 가져오기 (업데이트용)
       const existingFile = await this.githubClient.getFile(this.MEMORY_FILE_PATH);
       
+      const defaultMessage = `Update memory graph - ${new Date().toISOString()}`;
+      
       await this.githubClient.putFile(
         {
           path: this.MEMORY_FILE_PATH,
           content,
           sha: existingFile?.sha,
         },
-        `Update memory graph - ${new Date().toISOString()}`
+        commitMessage || defaultMessage
       );
       
       // 메타데이터 업데이트
@@ -130,5 +132,21 @@ export class SyncManager {
       return await this.pushToRemote();
     }
     return pullResult;
+  }
+
+  async getCommitHistory(limit: number = 10): Promise<any[]> {
+    try {
+      const response = await this.githubClient.getCommits(this.MEMORY_FILE_PATH, limit);
+      return response.map(commit => ({
+        sha: commit.sha.substring(0, 7),
+        message: commit.commit.message,
+        author: commit.commit.author.name,
+        date: commit.commit.author.date,
+        url: commit.html_url
+      }));
+    } catch (error) {
+      console.error('Failed to get commit history:', error);
+      return [];
+    }
   }
 }

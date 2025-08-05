@@ -106,4 +106,14 @@ export class GitHubClient {
     });
     return response.data.commit.sha;
   }
+
+  async getCommits(path?: string, limit: number = 10): Promise<any[]> {
+    const response = await this.octokit.rest.repos.listCommits({
+      owner: this.config.owner,
+      repo: this.config.repo,
+      path,
+      per_page: limit,
+    });
+    return response.data;
+  }
 }

@@ -19,6 +19,7 @@ interface ServerConfig {
   githubRepo: string;
   branch?: string;
   syncInterval?: number;
+  autoPush?: boolean; // 새로 추가
 }
 
 class RemoteMemoryMCPServer {
@@ -253,7 +254,12 @@ class RemoteMemoryMCPServer {
           description: '로컬 데이터를 GitHub로 푸시합니다',
           inputSchema: {
             type: 'object',
-            properties: {},
+            properties: {
+              commitMessage: {
+                type: 'string',
+                description: '커밋 메시지 (선택사항)'
+              }
+            },
           },
         },
         {
@@ -262,6 +268,32 @@ class RemoteMemoryMCPServer {
           inputSchema: {
             type: 'object',
             properties: {},
+          },
+        },
+        {
+          name: 'create_backup',
+          description: '현재 메모리 상태의 백업을 생성합니다',
+          inputSchema: {
+            type: 'object',
+            properties: {
+              backupName: {
+                type: 'string',
+                description: '백업 이름 (선택사항)'
+              }
+            },
+          },
+        },
+        {
+          name: 'get_commit_history',
+          description: '최근 커밋 히스토리를 조회합니다',
+          inputSchema: {
+            type: 'object',
+            properties: {
+              limit: {
+                type: 'number',
+                description: '조회할 커밋 수 (기본: 10)'
+              }
+            },
           },
         },
       ],
@@ -296,6 +328,10 @@ class RemoteMemoryMCPServer {
             return await this.handleSyncPush(args);
           case 'force_sync':
             return await this.handleForceSync(args);
+          case 'create_backup':
+            return await this.handleCreateBackup(args);
+          case 'get_commit_history':
+            return await this.handleGetCommitHistory(args);
           default:
             throw new McpError(
               ErrorCode.MethodNotFound,
@@ -313,7 +349,11 @@ class RemoteMemoryMCPServer {
 
   private async handleCreateEntities(args: any) {
     this.memoryManager.createEntities(args.entities);
-    await this.autoSync();
+    
+    // 더 의미있는 커밋 메시지로 자동 동기화
+    const entityNames = args.entities.map((e: any) => e.name).join(', ');
+    const commitMessage = `feat: Add ${args.entities.length} entities (${entityNames})`;
+    await this.syncWithMessage(commitMessage);
     
     return {
       content: [{
@@ -329,7 +369,9 @@ class RemoteMemoryMCPServer {
 
   private async handleCreateRelations(args: any) {
     this.memoryManager.createRelations(args.relations);
-    await this.autoSync();
+    
+    const commitMessage = `feat: Add ${args.relations.length} relations`;
+    await this.syncWithMessage(commitMessage);
     
     return {
       content: [{
@@ -345,7 +387,10 @@ class RemoteMemoryMCPServer {
 
   private async handleAddObservations(args: any) {
     this.memoryManager.addObservations(args.observations);
-    await this.autoSync();
+    
+    const totalObservations = args.observations.reduce((sum: number, obs: any) => sum + obs.contents.length, 0);
+    const commitMessage = `feat: Add ${totalObservations} observations to ${args.observations.length} entities`;
+    await this.syncWithMessage(commitMessage);
     
     return {
       content: [{
@@ -361,7 +406,10 @@ class RemoteMemoryMCPServer {
 
   private async handleDeleteEntities(args: any) {
     this.memoryManager.deleteEntities(args.entityNames);
-    await this.autoSync();
+    
+    const entityNames = args.entityNames.join(', ');
+    const commitMessage = `feat: Delete ${args.entityNames.length} entities (${entityNames})`;
+    await this.syncWithMessage(commitMessage);
     
     return {
       content: [{
@@ -377,7 +425,10 @@ class RemoteMemoryMCPServer {
 
   private async handleDeleteObservations(args: any) {
     this.memoryManager.deleteObservations(args.deletions);
-    await this.autoSync();
+    
+    const totalDeleted = args.deletions.reduce((sum: number, del: any) => sum + del.observations.length, 0);
+    const commitMessage = `feat: Delete ${totalDeleted} observations from ${args.deletions.length} entities`;
+    await this.syncWithMessage(commitMessage);
     
     return {
       content: [{
@@ -393,7 +444,9 @@ class RemoteMemoryMCPServer {
 
   private async handleDeleteRelations(args: any) {
     this.memoryManager.deleteRelations(args.relations);
-    await this.autoSync();
+    
+    const commitMessage = `feat: Delete ${args.relations.length} relations`;
+    await this.syncWithMessage(commitMessage);
     
     return {
       content: [{
@@ -477,7 +530,8 @@ class RemoteMemoryMCPServer {
   }
 
   private async handleSyncPush(args: any) {
-    const result = await this.syncManager.pushToRemote();
+    const commitMessage = args.commitMessage || undefined;
+    const result = await this.syncManager.pushToRemote(commitMessage);
     
     return {
       content: [{
@@ -504,12 +558,100 @@ class RemoteMemoryMCPServer {
     };
   }
 
+  private async handleCreateBackup(args: any) {
+    try {
+      const timestamp = new Date().toISOString().replace(/[:.]/g, '-');
+      const backupName = args.backupName || `backup-${timestamp}`;
+      const backupPath = `backups/${backupName}.json`;
+      
+      const currentData = this.memoryManager.toJSON();
+      const backupContent = JSON.stringify({
+        ...currentData,
+        backupInfo: {
+          createdAt: new Date().toISOString(),
+          name: backupName,
+          originalPath: 'memory/graph.json'
+        }
+      }, null, 2);
+      
+      await this.githubClient.putFile(
+        {
+          path: backupPath,
+          content: backupContent,
+        },
+        `backup: Create backup '${backupName}'`
+      );
+      
+      return {
+        content: [{
+          type: 'text',
+          text: JSON.stringify({
+            success: true,
+            message: `Backup created successfully`,
+            backupName,
+            backupPath,
+            timestamp: new Date().toISOString()
+          }, null, 2),
+        }],
+      };
+    } catch (error) {
+      return {
+        content: [{
+          type: 'text',
+          text: JSON.stringify({
+            success: false,
+            error: error instanceof Error ? error.message : 'Unknown error'
+          }, null, 2),
+        }],
+      };
+    }
+  }
+
+  private async handleGetCommitHistory(args: any) {
+    try {
+      const limit = args.limit || 10;
+      const commits = await this.syncManager.getCommitHistory(limit);
+      
+      return {
+        content: [{
+          type: 'text',
+          text: JSON.stringify({
+            success: true,
+            commits,
+            count: commits.length
+          }, null, 2),
+        }],
+      };
+    } catch (error) {
+      return {
+        content: [{
+          type: 'text',
+          text: JSON.stringify({
+            success: false,
+            error: error instanceof Error ? error.message : 'Unknown error'
+          }, null, 2),
+        }],
+      };
+    }
+  }
+
   private async autoSync(): Promise<void> {
     // 자동 푸시 (변경사항이 있을 때마다)
     try {
-      await this.syncManager.pushToRemote();
+      const autoMessage = `Auto-sync: ${new Date().toLocaleString()}`;
+      await this.syncManager.pushToRemote(autoMessage);
     } catch (error) {
       console.error('Auto sync failed:', error);
+    }
+  }
+
+  private async syncWithMessage(message: string): Promise<void> {
+    try {
+      await this.syncManager.pushToRemote(message);
+    } catch (error) {
+      console.error('Sync with message failed:', error);
+      // 폴백으로 기본 주동 동기화 시도
+      await this.autoSync();
     }
   }
 
