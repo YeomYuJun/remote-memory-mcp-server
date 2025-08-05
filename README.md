@@ -54,7 +54,7 @@ npm run build
 
 ## 사용법
 
-자세한 API 사용법과 예제는 ...를 참조하세요.
+자세한 API 사용법과 예제는 [SPEC.md](https://github.com/YeomYuJun/remote-memory-mcp-server/blob/main/SPEC.md/)를 참조하세요.
 
 ## 데이터 구조
 
