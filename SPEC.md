@@ -10,6 +10,7 @@ Remote Memory MCP Server는 다음과 같은 도구들을 제공합니다:
 - **관계 관리**: `create_relations`, `delete_relations`
 - **관찰 내용 관리**: `add_observations`, `delete_observations`
 - **동기화**: `sync_pull`, `sync_push`, `force_sync`
+- **백업/히스토리**: `create_backup`, `get_commit_history`
 - **조회**: `read_graph`
 
 ## 엔티티 관리
@@ -277,7 +278,11 @@ sync_pull()
 로컬 데이터를 GitHub 저장소로 푸시합니다.
 
 ```typescript
+// 기본 푸시
 sync_push()
+
+// 커스텀 메시지로 푸시
+sync_push({ commitMessage: "프로젝트 데이터 업데이트" })
 ```
 
 **응답 예시**:
@@ -305,6 +310,60 @@ force_sync()
   "success": true,
   "conflictResolved": true,
   "lastSync": "2025-01-01T00:00:00.000Z"
+}
+```
+
+## 백업 및 히스토리 관리
+
+### 백업 생성 (`create_backup`)
+
+현재 메모리 상태의 백업을 생성합니다.
+
+```typescript
+// 자동 이름으로 백업
+create_backup()
+
+// 커스텀 이름으로 백업  
+create_backup({ backupName: "stable-v2.0" })
+```
+
+**응답 예시**:
+```json
+{
+  "success": true,
+  "backupName": "backup-2025-01-01T10:30:00.000Z",
+  "message": "Backup created successfully"
+}
+```
+
+### 커밋 히스토리 조회 (get_commit_history)
+
+GitHub 저장소의 최근 커밋 히스토리를 조회합니다.
+
+```typescript
+// 기본 10개 조회
+get_commit_history()
+
+// 원하는 개수만 조회
+get_commit_history({ limit: 5 })
+```
+**파라미터**:
+- `limit`: 조회할 커밋 개수 (기본값: 10)
+
+**응답 예시**:
+```json
+{
+  "success": true,
+  "commits": [
+    {
+      "sha": "abc123...",
+      "message": "feat: Add 2 entities (John Doe, Company ABC)",
+      "author": "username",
+      "date": "2025-01-01T10:30:00Z",
+      "url": "https://github.com/user/repo/commit/abc123..."
+    }
+  ],
+  "count": 5
 }
 ```
 

@@ -11,6 +11,9 @@ GitHub 연동 원격 메모리 관리 MCP 서버입니다.
 - 충돌 감지 및 해결
 - 자동/수동 동기화 옵션
 - 검색 및 필터링 기능
+- 향상된 커밋 메시지(커스텀 명령 가능) [NEW]
+- 백업 기능 추가 [NEW]
+- 커밋 히스토리 조회 기능 [NEW]
 
 ## 설치
 
@@ -27,9 +30,11 @@ npm run build
 - `GITHUB_OWNER`: GitHub 저장소 소유자
 - `GITHUB_REPO`: GitHub 저장소 이름
 
+
 ### 선택 파라미터
 - `GITHUB_BRANCH`: 사용할 브랜치명 (기본값: main)
-  
+- `SYNC_INTERVAL` : 자동 동기화 간격 초단위 (0이면 수동)  
+
 ## Claude Desktop 설정
 
 `claude_desktop_config.json` 파일에 추가:
@@ -45,7 +50,7 @@ npm run build
         "GITHUB_OWNER": "YOUR_GITHUB_USERNAME", 
         "GITHUB_REPO": "YOUR_GITHUB_REPO",
         "GITHUB_BRANCH": "main",
-        "SYNC_INTERVAL": "300"
+        "SYNC_INTERVAL": "0"
       }
     }
   }
@@ -113,3 +118,14 @@ npm run build
 ## 라이선스
 
 MIT License - 자유롭게 사용, 수정, 배포 가능
+
+## 변경 로그
+
+### v1.1.0
+- 커스텀 커밋 메시지 지원
+- 백업 시스템 추가 (`create_backup`)
+- 커밋 히스토리 조회 (`get_commit_history`)
+- 자동 커밋 메시지 생성
+
+### v1.0.0
+- 초기 릴리스
