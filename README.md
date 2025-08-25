@@ -11,9 +11,10 @@ GitHub 연동 원격 메모리 관리 MCP 서버입니다.
 - 충돌 감지 및 해결
 - 자동/수동 동기화 옵션
 - 검색 및 필터링 기능
-- 향상된 커밋 메시지(커스텀 명령 가능) [NEW]
-- 백업 기능 추가 [NEW]
-- 커밋 히스토리 조회 기능 [NEW]
+- 향상된 커밋 메시지(커스텀 명령 가능)
+- 백업 기능 추가
+- 커밋 히스토리 조회 기능
+- 선택적 자동 푸시 기능 (AUTO_PUSH 환경변수)
 
 ## 설치
 
@@ -34,6 +35,7 @@ npm run build
 ### 선택 파라미터
 - `GITHUB_BRANCH`: 사용할 브랜치명 (기본값: main)
 - `SYNC_INTERVAL` : 자동 동기화 간격 초단위 (0이면 수동)  
+- `AUTO_PUSH`: CRUD 작업 후 자동 푸시 여부 (true/false, 기본값: false)
 
 ## Claude Desktop 설정
 
@@ -50,7 +52,8 @@ npm run build
         "GITHUB_OWNER": "YOUR_GITHUB_USERNAME", 
         "GITHUB_REPO": "YOUR_GITHUB_REPO",
         "GITHUB_BRANCH": "main",
-        "SYNC_INTERVAL": "0"
+        "SYNC_INTERVAL": "0",
+        "AUTO_PUSH": "false"
       }
     }
   }
@@ -120,6 +123,12 @@ npm run build
 MIT License - 자유롭게 사용, 수정, 배포 가능
 
 ## 변경 로그
+
+### v1.2.0
+- 초기화 시 불필요한 자동 커밋 방지
+- AUTO_PUSH 환경변수 추가로 선택적 자동 푸시 지원
+- 빈 그래프 푸시 방지 로직 추가
+- 초기 로드 상태 추적 개선
 
 ### v1.1.0
 - 커스텀 커밋 메시지 지원

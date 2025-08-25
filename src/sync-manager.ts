@@ -13,6 +13,7 @@ export class SyncManager {
   private memoryManager: MemoryGraphManager;
   private readonly MEMORY_FILE_PATH = 'memory/graph.json';
   private syncInterval?: NodeJS.Timeout;
+  private isInitialLoad = true; // 초기 로드 상태 추적
 
   constructor(githubClient: GitHubClient, memoryManager: MemoryGraphManager) {
     this.githubClient = githubClient;
@@ -33,16 +34,29 @@ export class SyncManager {
         // 원격 데이터로 로컬 업데이트
         this.memoryManager.fromJSON(remoteData);
         
+        this.isInitialLoad = false; // 초기 로드 완료 표시
+        
         return {
           success: true,
           conflictResolved,
           lastSync: new Date().toISOString(),
         };
       } else {
-        // 원격에 파일이 없으면 현재 상태를 푸시
-        return await this.pushToRemote();
+        // 원격에 파일이 없고 초기 로드가 아닐 때만 푸시
+        if (!this.isInitialLoad) {
+          return await this.pushToRemote();
+        } else {
+          // 초기 로드 시에는 빈 상태로 시작
+          this.isInitialLoad = false;
+          return {
+            success: true,
+            conflictResolved: false,
+            lastSync: new Date().toISOString(),
+          };
+        }
       }
     } catch (error) {
+      this.isInitialLoad = false;
       return {
         success: false,
         conflictResolved: false,
@@ -55,6 +69,17 @@ export class SyncManager {
   async pushToRemote(commitMessage?: string): Promise<SyncResult> {
     try {
       const localData = this.memoryManager.toJSON();
+      
+      // 빈 그래프는 푸시하지 않음 (초기 상태 방지)
+      if (Object.keys(localData.entities || {}).length === 0 && 
+          (!localData.relations || localData.relations.length === 0)) {
+        return {
+          success: true,
+          conflictResolved: false,
+          lastSync: new Date().toISOString(),
+        };
+      }
+      
       const content = JSON.stringify(localData, null, 2);
       
       // 현재 파일의 SHA 가져오기 (업데이트용)

@@ -27,6 +27,8 @@ class RemoteMemoryMCPServer {
   private memoryManager: MemoryGraphManager;
   private githubClient!: GitHubClient;
   private syncManager!: SyncManager;
+  private autoPush = false; // 자동 푸시 비활성화 기본값
+
 
   constructor() {
     this.server = new Server(
@@ -57,6 +59,7 @@ class RemoteMemoryMCPServer {
 
     this.githubClient = new GitHubClient(githubConfig);
     this.syncManager = new SyncManager(this.githubClient, this.memoryManager);
+	this.autoPush = config.autoPush ?? false; // 자동 푸시 설정
 
     // 초기 동기화 (오류 처리 추가)
     try {
@@ -350,11 +353,15 @@ class RemoteMemoryMCPServer {
   private async handleCreateEntities(args: any) {
     this.memoryManager.createEntities(args.entities);
     
-    // 더 의미있는 커밋 메시지로 자동 동기화
-    const entityNames = args.entities.map((e: any) => e.name).join(', ');
-    const commitMessage = `feat: Add ${args.entities.length} entities (${entityNames})`;
-    await this.syncWithMessage(commitMessage);
     
+    // 자동 푸시가 활성화된 경우에만 동기화
+    if (this.autoPush) {
+		// 더 의미있는 커밋 메시지로 자동 동기화
+      const entityNames = args.entities.map((e: any) => e.name).join(', ');
+      const commitMessage = `feat: Add ${args.entities.length} entities (${entityNames})`;
+      await this.syncWithMessage(commitMessage);
+    }
+	
     return {
       content: [{
         type: 'text',
@@ -646,6 +653,8 @@ class RemoteMemoryMCPServer {
   }
 
   private async syncWithMessage(message: string): Promise<void> {
+    if (!this.autoPush) return; // 자동 푸시가 비활성화된 경우 스킵
+	
     try {
       await this.syncManager.pushToRemote(message);
     } catch (error) {
@@ -692,6 +701,7 @@ async function main() {
     githubRepo: process.env.GITHUB_REPO || '',
     branch: process.env.GITHUB_BRANCH || 'main',
     syncInterval: process.env.SYNC_INTERVAL ? parseInt(process.env.SYNC_INTERVAL) : 0,
+	autoPush: process.env.AUTO_PUSH === 'true', // 환경변수로 제어
   };
 
   // 필수 설정 확인

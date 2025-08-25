@@ -431,3 +431,14 @@ Link : https://github.com/YeomYuJun/remote_memory/blob/main/memory/graph.json
 - GitHub API rate limit: 시간당 5,000 요청
 - 최대 파일 크기: 100MB (GitHub 제한)
 - 네트워크 연결 필수 (동기화 시)
+
+## 동기화 동작
+
+### 자동 푸시 설정 (AUTO_PUSH)
+- `AUTO_PUSH=true`: 모든 CRUD 작업 후 자동으로 GitHub에 푸시
+- `AUTO_PUSH=false` (기본값): 수동으로 `sync_push` 호출 시에만 푸시
+
+### 초기화 동작
+- 서버 시작 시 원격 저장소에서 데이터를 가져옴
+- 원격에 파일이 없어도 빈 상태로 자동 푸시하지 않음
+- 데이터가 있는 경우에만 푸시 수행
