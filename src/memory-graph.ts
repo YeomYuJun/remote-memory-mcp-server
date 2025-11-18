@@ -144,6 +144,101 @@ export class MemoryGraphManager {
       .filter((entity): entity is Entity => entity !== undefined);
   }
 
+  // 새로운 쿼리 기능들
+  listEntities(options?: {
+    entityType?: string;
+    sortBy?: 'createdAt' | 'updatedAt' | 'name';
+    sortOrder?: 'asc' | 'desc';
+    dateFrom?: string;
+    dateTo?: string;
+    limit?: number;
+    offset?: number;
+  }): { entities: Entity[]; total: number } {
+    let entities = Array.from(this.graph.entities.values());
+
+    // EntityType 필터링
+    if (options?.entityType) {
+      entities = entities.filter(e => e.entityType === options.entityType);
+    }
+
+    // 날짜 범위 필터링
+    if (options?.dateFrom) {
+      entities = entities.filter(e => e.createdAt >= options.dateFrom!);
+    }
+    if (options?.dateTo) {
+      entities = entities.filter(e => e.createdAt <= options.dateTo!);
+    }
+
+    // 정렬
+    const sortBy = options?.sortBy || 'createdAt';
+    const sortOrder = options?.sortOrder || 'desc';
+    entities.sort((a, b) => {
+      let aVal: string, bVal: string;
+      if (sortBy === 'name') {
+        aVal = a.name;
+        bVal = b.name;
+      } else {
+        aVal = a[sortBy];
+        bVal = b[sortBy];
+      }
+      const comparison = aVal.localeCompare(bVal);
+      return sortOrder === 'asc' ? comparison : -comparison;
+    });
+
+    const total = entities.length;
+
+    // 페이지네이션
+    if (options?.offset !== undefined || options?.limit !== undefined) {
+      const offset = options.offset || 0;
+      const limit = options.limit || 50;
+      entities = entities.slice(offset, offset + limit);
+    }
+
+    return { entities, total };
+  }
+
+  getEntityNames(options?: {
+    entityType?: string;
+    sortBy?: 'createdAt' | 'updatedAt' | 'name';
+    sortOrder?: 'asc' | 'desc';
+  }): string[] {
+    let entities = Array.from(this.graph.entities.values());
+
+    if (options?.entityType) {
+      entities = entities.filter(e => e.entityType === options.entityType);
+    }
+
+    const sortBy = options?.sortBy || 'createdAt';
+    const sortOrder = options?.sortOrder || 'desc';
+    entities.sort((a, b) => {
+      let aVal: string, bVal: string;
+      if (sortBy === 'name') {
+        aVal = a.name;
+        bVal = b.name;
+      } else {
+        aVal = a[sortBy];
+        bVal = b[sortBy];
+      }
+      const comparison = aVal.localeCompare(bVal);
+      return sortOrder === 'asc' ? comparison : -comparison;
+    });
+
+    return entities.map(e => e.name);
+  }
+
+  getEntityTypes(): { type: string; count: number }[] {
+    const typeMap = new Map<string, number>();
+
+    this.graph.entities.forEach(entity => {
+      const count = typeMap.get(entity.entityType) || 0;
+      typeMap.set(entity.entityType, count + 1);
+    });
+
+    return Array.from(typeMap.entries())
+      .map(([type, count]) => ({ type, count }))
+      .sort((a, b) => b.count - a.count);
+  }
+
   getGraph(): MemoryGraph {
     return {
       entities: new Map(this.graph.entities),

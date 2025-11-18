@@ -6,12 +6,92 @@
 
 Remote Memory MCP Server는 다음과 같은 도구들을 제공합니다:
 
+- **엔티티 조회** (v1.3.0+): `get_entity_types`, `get_entity_names`, `list_entities`
 - **엔티티 관리**: `create_entities`, `delete_entities`, `open_nodes`, `search_nodes`
 - **관계 관리**: `create_relations`, `delete_relations`
 - **관찰 내용 관리**: `add_observations`, `delete_observations`
 - **동기화**: `sync_pull`, `sync_push`, `force_sync`
 - **백업/히스토리**: `create_backup`, `get_commit_history`
 - **조회**: `read_graph`
+
+## 엔티티 조회 (v1.3.0+)
+
+### 엔티티 타입 통계 (`get_entity_types`)
+
+엔티티 타입별 개수를 조회합니다.
+
+```typescript
+get_entity_types()
+```
+
+**응답 예시**:
+```json
+{
+  "success": true,
+  "types": [
+    { "type": "Person", "count": 45 },
+    { "type": "Company", "count": 23 }
+  ],
+  "totalTypes": 2,
+  "totalEntities": 68
+}
+```
+
+### 엔티티 이름 목록 (`get_entity_names`)
+
+엔티티 이름만 빠르게 조회합니다.
+
+```typescript
+get_entity_names({
+  entityType: "Person",  // optional
+  sortBy: "name",        // optional: createdAt, updatedAt, name
+  sortOrder: "asc"       // optional: asc, desc
+})
+```
+
+**응답 예시**:
+```json
+{
+  "success": true,
+  "names": ["Alice", "Bob", "Charlie"],
+  "count": 3
+}
+```
+
+### 엔티티 목록 조회 (`list_entities`)
+
+필터링과 페이지네이션을 지원하는 엔티티 목록 조회입니다.
+
+```typescript
+list_entities({
+  entityType: "Person",               // optional
+  sortBy: "createdAt",               // optional: createdAt, updatedAt, name
+  sortOrder: "desc",                 // optional: asc, desc
+  dateFrom: "2025-01-01T00:00:00Z", // optional
+  dateTo: "2025-01-31T23:59:59Z",   // optional
+  limit: 50,                         // optional, default: 50
+  offset: 0                          // optional, default: 0
+})
+```
+
+**응답 예시**:
+```json
+{
+  "success": true,
+  "entities": [
+    {
+      "name": "Alice",
+      "entityType": "Person",
+      "observations": ["Software engineer"],
+      "createdAt": "2025-01-15T10:30:00Z",
+      "updatedAt": "2025-01-18T14:22:00Z"
+    }
+  ],
+  "count": 1,
+  "total": 45,
+  "hasMore": true
+}
+```
 
 ## 엔티티 관리
 

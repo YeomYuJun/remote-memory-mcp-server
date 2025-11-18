@@ -34,7 +34,7 @@ class RemoteMemoryMCPServer {
     this.server = new Server(
       {
         name: 'remote-memory-mcp',
-        version: '1.0.0',
+        version: '1.3.0',
       },
       {
         capabilities: {
@@ -237,6 +237,76 @@ class RemoteMemoryMCPServer {
           },
         },
         {
+          name: 'list_entities',
+          description: '엔티티 목록을 조회합니다 (필터링, 정렬, 페이지네이션 지원)',
+          inputSchema: {
+            type: 'object',
+            properties: {
+              entityType: {
+                type: 'string',
+                description: '특정 엔티티 타입으로 필터링'
+              },
+              sortBy: {
+                type: 'string',
+                enum: ['createdAt', 'updatedAt', 'name'],
+                description: '정렬 기준 (기본값: createdAt)'
+              },
+              sortOrder: {
+                type: 'string',
+                enum: ['asc', 'desc'],
+                description: '정렬 순서 (기본값: desc)'
+              },
+              dateFrom: {
+                type: 'string',
+                description: '시작 날짜 (ISO 8601 형식)'
+              },
+              dateTo: {
+                type: 'string',
+                description: '종료 날짜 (ISO 8601 형식)'
+              },
+              limit: {
+                type: 'number',
+                description: '페이지 크기 (기본값: 50)'
+              },
+              offset: {
+                type: 'number',
+                description: '시작 위치 (기본값: 0)'
+              }
+            },
+          },
+        },
+        {
+          name: 'get_entity_names',
+          description: '엔티티 이름 목록만 조회합니다 (가볍고 빠름)',
+          inputSchema: {
+            type: 'object',
+            properties: {
+              entityType: {
+                type: 'string',
+                description: '특정 엔티티 타입으로 필터링'
+              },
+              sortBy: {
+                type: 'string',
+                enum: ['createdAt', 'updatedAt', 'name'],
+                description: '정렬 기준 (기본값: createdAt)'
+              },
+              sortOrder: {
+                type: 'string',
+                enum: ['asc', 'desc'],
+                description: '정렬 순서 (기본값: desc)'
+              }
+            },
+          },
+        },
+        {
+          name: 'get_entity_types',
+          description: '모든 엔티티 타입과 각 타입별 개수를 조회합니다',
+          inputSchema: {
+            type: 'object',
+            properties: {},
+          },
+        },
+        {
           name: 'read_graph',
           description: '전체 지식 그래프를 읽습니다',
           inputSchema: {
@@ -323,6 +393,12 @@ class RemoteMemoryMCPServer {
             return await this.handleSearchNodes(args);
           case 'open_nodes':
             return await this.handleOpenNodes(args);
+          case 'list_entities':
+            return await this.handleListEntities(args);
+          case 'get_entity_names':
+            return await this.handleGetEntityNames(args);
+          case 'get_entity_types':
+            return await this.handleGetEntityTypes(args);
           case 'read_graph':
             return await this.handleReadGraph(args);
           case 'sync_pull':
@@ -485,7 +561,7 @@ class RemoteMemoryMCPServer {
 
   private async handleOpenNodes(args: any) {
     const nodes = this.memoryManager.getNodes(args.names);
-    
+
     return {
       content: [{
         type: 'text',
@@ -495,6 +571,73 @@ class RemoteMemoryMCPServer {
           nodes: nodes,
           found: nodes.length,
           requested: args.names.length,
+        }, null, 2),
+      }],
+    };
+  }
+
+  private async handleListEntities(args: any) {
+    const result = this.memoryManager.listEntities({
+      entityType: args.entityType,
+      sortBy: args.sortBy,
+      sortOrder: args.sortOrder,
+      dateFrom: args.dateFrom,
+      dateTo: args.dateTo,
+      limit: args.limit,
+      offset: args.offset,
+    });
+
+    return {
+      content: [{
+        type: 'text',
+        text: JSON.stringify({
+          success: true,
+          entities: result.entities,
+          count: result.entities.length,
+          total: result.total,
+          offset: args.offset || 0,
+          limit: args.limit || 50,
+          hasMore: (args.offset || 0) + result.entities.length < result.total,
+        }, null, 2),
+      }],
+    };
+  }
+
+  private async handleGetEntityNames(args: any) {
+    const names = this.memoryManager.getEntityNames({
+      entityType: args.entityType,
+      sortBy: args.sortBy,
+      sortOrder: args.sortOrder,
+    });
+
+    return {
+      content: [{
+        type: 'text',
+        text: JSON.stringify({
+          success: true,
+          names: names,
+          count: names.length,
+          filters: {
+            entityType: args.entityType || 'all',
+            sortBy: args.sortBy || 'createdAt',
+            sortOrder: args.sortOrder || 'desc',
+          },
+        }, null, 2),
+      }],
+    };
+  }
+
+  private async handleGetEntityTypes(args: any) {
+    const types = this.memoryManager.getEntityTypes();
+
+    return {
+      content: [{
+        type: 'text',
+        text: JSON.stringify({
+          success: true,
+          types: types,
+          totalTypes: types.length,
+          totalEntities: types.reduce((sum, t) => sum + t.count, 0),
         }, null, 2),
       }],
     };
