@@ -1,6 +1,164 @@
 # remote-memory-mcp-server
 Remote Memory MCP Server
 
+A GitHub-integrated remote memory management MCP server that syncs knowledge graph data with GitHub repositories for remote storage and collaboration.
+
+## Features
+
+- CRUD operations for entities, relations, and observations
+- Real-time synchronization with GitHub repositories
+- Conflict detection and resolution
+- Automatic/manual synchronization options
+- Search and filtering capabilities
+- **Enhanced entity query features** (v1.3.0)
+  - Entity list retrieval (with filtering, sorting, pagination)
+  - Quick entity name lookup
+  - Entity type statistics
+  - Date range filtering
+- Enhanced commit messages (customizable)
+- Backup functionality
+- Commit history tracking
+- Optional auto-push (AUTO_PUSH environment variable)
+
+## Installation
+
+```bash
+cd C:\YOUR_PATH\remote-memory-mcp
+npm install
+npm run build
+```
+
+## Configuration
+
+### Required Parameters
+- `GITHUB_TOKEN`: GitHub Personal Access Token (requires repo permissions)
+- `GITHUB_OWNER`: GitHub repository owner
+- `GITHUB_REPO`: GitHub repository name
+
+### Optional Parameters
+- `GITHUB_BRANCH`: Branch name to use (default: main)
+- `SYNC_INTERVAL`: Auto-sync interval in seconds (0 for manual)
+- `AUTO_PUSH`: Auto-push after CRUD operations (true/false, default: false)
+
+## Claude Desktop Setup
+
+Add to your `claude_desktop_config.json` file:
+
+```json
+{
+  "mcpServers": {
+    "remote-memory": {
+      "command": "node",
+      "args": ["C://YOUR_PATH//remote-memory-mcp//dist//index.js"],
+      "env": {
+        "GITHUB_TOKEN": "YOUR_GITHUB_TOKEN_HERE",
+        "GITHUB_OWNER": "YOUR_GITHUB_USERNAME", 
+        "GITHUB_REPO": "YOUR_GITHUB_REPO",
+        "GITHUB_BRANCH": "main",
+        "SYNC_INTERVAL": "0",
+        "AUTO_PUSH": "false"
+      }
+    }
+  }
+}
+```
+
+## Usage
+
+For detailed API usage and examples, see [SPEC.md](https://github.com/YeomYuJun/remote-memory-mcp-server/blob/main/SPEC.md/).
+
+## Data Structure
+
+Memory data is stored in the `memory/graph.json` file in your GitHub repository:
+
+```json
+{
+  "entities": {
+    "Kim Kim": {
+      "name": "Kim Kim",
+      "entityType": "Person", 
+      "observations": ["Software developer", "Lives in Seoul"],
+      "createdAt": "2025-01-01T00:00:00.000Z",
+      "updatedAt": "2025-01-01T00:00:00.000Z"
+    }
+  },
+  "relations": [
+    {
+      "from": "Kim Kim",
+      "to": "Company ABC", 
+      "relationType": "works_at",
+      "createdAt": "2025-01-01T00:00:00.000Z"
+    }
+  ],
+  "metadata": {
+    "version": "1.0.0",
+    "lastModified": "2025-01-01T00:00:00.000Z",
+    "lastSync": "2025-01-01T00:00:00.000Z"
+  }
+}
+```
+
+## Architecture
+
+### Core Components
+
+1. **GitHubClient**: Handles GitHub API interactions
+2. **MemoryGraphManager**: Manages the memory graph
+3. **SyncManager**: Handles synchronization
+4. **RemoteMemoryMCPServer**: Main MCP server class
+
+### Synchronization Strategy
+
+1. **Conflict Resolution**: Prioritizes based on latest modification timestamp
+2. **Auto-push**: Immediately pushes local changes to remote
+3. **Auto-pull**: Checks for remote changes at configured intervals
+4. **Force Sync**: Performs bidirectional sync ignoring conflicts
+
+## Important Notes
+
+- Requires GitHub Personal Access Token (with repo permissions)
+- GitHub API limits: 5,000 requests per hour for authenticated users
+- Network connection required
+- Rate limit of 5,000 requests/hour; 403 error when exceeded
+
+## License
+
+MIT License - Free to use, modify, and distribute
+
+## Changelog
+
+### v1.3.0
+- **New query tools**
+  - `list_entities`: Retrieve entity list (with filtering, sorting, pagination)
+  - `get_entity_names`: Quick entity name lookup
+  - `get_entity_types`: Entity type statistics
+- **Enhanced query capabilities**
+  - EntityType filtering
+  - Date range filtering (based on createdAt)
+  - Sort options (createdAt, updatedAt, name)
+  - Pagination (limit, offset)
+- Improved handling of large datasets
+
+### v1.2.0
+- Prevented unnecessary auto-commits on initialization
+- Added AUTO_PUSH environment variable for optional auto-push
+- Added logic to prevent pushing empty graphs
+- Improved initial load state tracking
+
+### v1.1.0
+- Custom commit message support
+- Added backup system (`create_backup`)
+- Commit history tracking (`get_commit_history`)
+- Automatic commit message generation
+
+### v1.0.0
+- Initial release
+
+---
+
+# remote-memory-mcp-server
+Remote Memory MCP Server
+
 GitHub 연동 원격 메모리 관리 MCP 서버입니다. 
 지식 그래프 데이터를 GitHub 저장소와 동기화하여 Memory의 원격 저장 및 협업을 지원합니다.
 

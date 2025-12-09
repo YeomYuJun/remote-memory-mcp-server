@@ -1,3 +1,530 @@
+# Remote Memory MCP Server API Specification
+
+This document provides detailed API usage and examples for the Remote Memory MCP Server.
+
+## Overview
+
+Remote Memory MCP Server provides the following tools:
+
+- **Entity Query** (v1.3.0+): `get_entity_types`, `get_entity_names`, `list_entities`
+- **Entity Management**: `create_entities`, `delete_entities`, `open_nodes`, `search_nodes`
+- **Relation Management**: `create_relations`, `delete_relations`
+- **Observation Management**: `add_observations`, `delete_observations`
+- **Synchronization**: `sync_pull`, `sync_push`, `force_sync`
+- **Backup/History**: `create_backup`, `get_commit_history`
+- **Query**: `read_graph`
+
+## Entity Query (v1.3.0+)
+
+### Entity Type Statistics (`get_entity_types`)
+
+Retrieves count statistics by entity type.
+
+```typescript
+get_entity_types()
+```
+
+**Response example**:
+```json
+{
+  "success": true,
+  "types": [
+    { "type": "Person", "count": 45 },
+    { "type": "Company", "count": 23 }
+  ],
+  "totalTypes": 2,
+  "totalEntities": 68
+}
+```
+
+### Entity Name List (`get_entity_names`)
+
+Quickly retrieves entity names only.
+
+```typescript
+get_entity_names({
+  entityType: "Person",  // optional
+  sortBy: "name",        // optional: createdAt, updatedAt, name
+  sortOrder: "asc"       // optional: asc, desc
+})
+```
+
+**Response example**:
+```json
+{
+  "success": true,
+  "names": ["Alice", "Bob", "Charlie"],
+  "count": 3
+}
+```
+
+### Entity List Retrieval (`list_entities`)
+
+Retrieve entity list with filtering and pagination support.
+
+```typescript
+list_entities({
+  entityType: "Person",               // optional
+  sortBy: "createdAt",               // optional: createdAt, updatedAt, name
+  sortOrder: "desc",                 // optional: asc, desc
+  dateFrom: "2025-01-01T00:00:00Z", // optional
+  dateTo: "2025-01-31T23:59:59Z",   // optional
+  limit: 50,                         // optional, default: 50
+  offset: 0                          // optional, default: 0
+})
+```
+
+**Response example**:
+```json
+{
+  "success": true,
+  "entities": [
+    {
+      "name": "Alice",
+      "entityType": "Person",
+      "observations": ["Software engineer"],
+      "createdAt": "2025-01-15T10:30:00Z",
+      "updatedAt": "2025-01-18T14:22:00Z"
+    }
+  ],
+  "count": 1,
+  "total": 45,
+  "hasMore": true
+}
+```
+
+## Entity Management
+
+### Create Entities (`create_entities`)
+
+Creates new entities.
+
+```typescript
+create_entities({
+  entities: [
+    {
+      name: "Kim Kim",
+      entityType: "Person",
+      observations: ["Software developer", "Lives in Seoul"]
+    },
+    {
+      name: "KimCorp",
+      entityType: "Company", 
+      observations: ["AI startup", "Founded in 2023"]
+    }
+  ]
+})
+```
+
+**Parameters**:
+- `entities`: Array of entities to create
+  - `name` (string): Entity name (unique identifier)
+  - `entityType` (string): Entity type (Person, Company, Project, etc.)
+  - `observations` (string[]): Array of observation contents
+
+**Response example**:
+```json
+{
+  "success": true,
+  "message": "Created 2 entities",
+  "entities": ["Kim Kim", "KimCorp"]
+}
+```
+
+### Search Entities (`search_nodes`)
+
+Search for entities using keywords.
+
+```typescript
+search_nodes({ query: "developer" })
+```
+
+**Parameters**:
+- `query` (string): Search keyword (searches in name, type, observations)
+
+**Response example**:
+```json
+{
+  "success": true,
+  "query": "developer",
+  "results": [
+    {
+      "name": "Kim Kim",
+      "entityType": "Person",
+      "observations": ["Software developer", "Lives in Seoul"],
+      "createdAt": "2025-01-01T00:00:00.000Z",
+      "updatedAt": "2025-01-01T00:00:00.000Z"
+    }
+  ],
+  "count": 1
+}
+```
+
+### Retrieve Specific Entities (`open_nodes`)
+
+Retrieve specific entities by name.
+
+```typescript
+open_nodes({ names: ["Kim Kim", "KimCorp"] })
+```
+
+**Parameters**:
+- `names` (string[]): Array of entity names to retrieve
+
+**Response example**:
+```json
+{
+  "success": true,
+  "requestedNames": ["Kim Kim", "KimCorp"],
+  "nodes": [
+    {
+      "name": "Kim Kim",
+      "entityType": "Person",
+      "observations": ["Software developer", "Lives in Seoul"],
+      "createdAt": "2025-01-01T00:00:00.000Z",
+      "updatedAt": "2025-01-01T00:00:00.000Z"
+    }
+  ],
+  "found": 1,
+  "requested": 2
+}
+```
+
+### Delete Entities (`delete_entities`)
+
+Deletes entities and all their associated relations.
+
+```typescript
+delete_entities({ entityNames: ["Kim Kim"] })
+```
+
+**Parameters**:
+- `entityNames` (string[]): Array of entity names to delete
+
+**Response example**:
+```json
+{
+  "success": true,
+  "message": "Deleted entities: Kim Kim",
+  "deletedEntities": ["Kim Kim"]
+}
+```
+
+## Relation Management
+
+### Create Relations (`create_relations`)
+
+Creates relationships between entities.
+
+```typescript
+create_relations({
+  relations: [
+    {
+      from: "Kim Kim",
+      to: "KimCorp",
+      relationType: "works_at"
+    },
+    {
+      from: "Kim Kim", 
+      to: "AI Project",
+      relationType: "leads"
+    }
+  ]
+})
+```
+
+**Parameters**:
+- `relations`: Array of relations to create
+  - `from` (string): Source entity name
+  - `to` (string): Target entity name
+  - `relationType` (string): Relation type (works_at, leads, belongs_to, etc.)
+
+**Response example**:
+```json
+{
+  "success": true,
+  "message": "Created 2 relations",
+  "relations": [
+    {
+      "from": "Kim Kim",
+      "to": "KimCorp", 
+      "relationType": "works_at"
+    }
+  ]
+}
+```
+
+### Delete Relations (`delete_relations`)
+
+Deletes specific relations.
+
+```typescript
+delete_relations({
+  relations: [
+    {
+      from: "Kim Kim",
+      to: "KimCorp",
+      relationType: "works_at"
+    }
+  ]
+})
+```
+
+**Parameters**:
+- `relations`: Array of relations to delete (must match from, to, and relationType exactly)
+
+## Observation Management
+
+### Add Observations (`add_observations`)
+
+Adds new observations to existing entities.
+
+```typescript
+add_observations({
+  observations: [
+    {
+      entityName: "Kim Kim",
+      contents: ["Speaks Korean fluently", "Expert in TypeScript"]
+    },
+    {
+      entityName: "KimCorp",
+      contents: ["Remote-first company", "15 employees"]
+    }
+  ]
+})
+```
+
+**Parameters**:
+- `observations`: Array of observations to add
+  - `entityName` (string): Target entity name
+  - `contents` (string[]): Array of observation contents to add
+
+**Response example**:
+```json
+{
+  "success": true,
+  "message": "Added observations",
+  "observations": [
+    {
+      "entityName": "Kim Kim",
+      "contents": ["Speaks Korean fluently", "Expert in TypeScript"]
+    }
+  ]
+}
+```
+
+### Delete Observations (`delete_observations`)
+
+Deletes specific observations from entities.
+
+```typescript
+delete_observations({
+  deletions: [
+    {
+      entityName: "Kim Kim", 
+      observations: ["Lives in Seoul"]
+    }
+  ]
+})
+```
+
+**Parameters**:
+- `deletions`: Array of observations to delete
+  - `entityName` (string): Target entity name
+  - `observations` (string[]): Array of observation contents to delete (must match exactly)
+
+## Synchronization Operations
+
+### Pull from Remote (`sync_pull`)
+
+Fetches the latest data from GitHub and syncs with local data.
+
+```typescript
+sync_pull()
+```
+
+**Response example**:
+```json
+{
+  "operation": "sync_pull",
+  "success": true,
+  "conflictResolved": false,
+  "lastSync": "2025-01-01T00:00:00.000Z"
+}
+```
+
+### Push to Remote (`sync_push`)
+
+Pushes local data to the GitHub repository.
+
+```typescript
+// Basic push
+sync_push()
+
+// Push with custom message
+sync_push({ commitMessage: "Update project data" })
+```
+
+**Response example**:
+```json
+{
+  "operation": "sync_push",
+  "success": true,
+  "conflictResolved": false,
+  "lastSync": "2025-01-01T00:00:00.000Z"
+}
+```
+
+### Force Synchronization (`force_sync`)
+
+Performs bidirectional synchronization, ignoring conflicts.
+
+```typescript
+force_sync()
+```
+
+**Response example**:
+```json
+{
+  "operation": "force_sync", 
+  "success": true,
+  "conflictResolved": true,
+  "lastSync": "2025-01-01T00:00:00.000Z"
+}
+```
+
+## Backup and History Management
+
+### Create Backup (`create_backup`)
+
+Creates a backup of the current memory state.
+
+```typescript
+// Auto-generated name
+create_backup()
+
+// Custom name
+create_backup({ backupName: "stable-v2.0" })
+```
+
+**Response example**:
+```json
+{
+  "success": true,
+  "backupName": "backup-2025-01-01T10:30:00.000Z",
+  "message": "Backup created successfully"
+}
+```
+
+### Get Commit History (`get_commit_history`)
+
+Retrieves recent commit history from the GitHub repository.
+
+```typescript
+// Default 10 commits
+get_commit_history()
+
+// Custom number of commits
+get_commit_history({ limit: 5 })
+```
+**Parameters**:
+- `limit`: Number of commits to retrieve (default: 10)
+
+**Response example**:
+```json
+{
+  "success": true,
+  "commits": [
+    {
+      "sha": "abc123...",
+      "message": "feat: Add 2 entities (John Doe, Company ABC)",
+      "author": "username",
+      "date": "2025-01-01T10:30:00Z",
+      "url": "https://github.com/user/repo/commit/abc123..."
+    }
+  ],
+  "count": 5
+}
+```
+
+## Full Query
+
+### Read Entire Graph (`read_graph`)
+
+Retrieves the entire knowledge graph.
+
+```typescript
+read_graph()
+```
+
+**Response example**:
+```json
+{
+  "entities": {
+    "Kim Kim": {
+      "name": "Kim Kim",
+      "entityType": "Person",
+      "observations": ["Software developer", "Lives in Seoul"],
+      "createdAt": "2025-01-01T00:00:00.000Z",
+      "updatedAt": "2025-01-01T00:00:00.000Z"
+    }
+  },
+  "relations": [
+    {
+      "from": "Kim Kim",
+      "to": "KimCorp",
+      "relationType": "works_at", 
+      "createdAt": "2025-01-01T00:00:00.000Z"
+    }
+  ],
+  "metadata": {
+    "version": "1.0.0",
+    "lastModified": "2025-01-01T00:00:00.000Z",
+    "lastSync": "2025-01-01T00:00:00.000Z"
+  },
+  "summary": {
+    "entityCount": 1,
+    "relationCount": 1,
+    "lastModified": "2025-01-01T00:00:00.000Z",
+    "lastSync": "2025-01-01T00:00:00.000Z"
+  }
+}
+```
+
+## Usage Example
+Link: https://github.com/YeomYuJun/remote_memory/blob/main/memory/graph.json
+
+## Error Handling
+
+All API calls return errors in the following format:
+
+```json
+{
+  "success": false,
+  "error": "Error message here"
+}
+```
+
+## Limitations
+
+- Entity names must be unique
+- GitHub API rate limit: 5,000 requests per hour
+- Maximum file size: 100MB (GitHub limitation)
+- Network connection required (for synchronization)
+
+## Synchronization Behavior
+
+### Auto-push Configuration (AUTO_PUSH)
+- `AUTO_PUSH=true`: Automatically pushes to GitHub after all CRUD operations
+- `AUTO_PUSH=false` (default): Only pushes when `sync_push` is manually called
+
+### Initialization Behavior
+- Fetches data from remote repository on server startup
+- Does not auto-push empty state even if remote file is missing
+- Only pushes when data is present
+
+---
+
 # Remote Memory MCP Server API 사양서
 
 이 문서는 Remote Memory MCP Server의 상세한 API 사용법과 예제를 제공합니다.
