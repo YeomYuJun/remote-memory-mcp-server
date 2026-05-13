@@ -87,29 +87,6 @@ export class GitHubClient {
     }
   }
 
-  async listDirectories(directory: string = ''): Promise<string[]> {
-    try {
-      const response = await this.octokit.rest.repos.getContent({
-        owner: this.config.owner,
-        repo: this.config.repo,
-        path: directory,
-        ref: this.config.branch,
-      });
-
-      if (Array.isArray(response.data)) {
-        return response.data
-          .filter(item => item.type === 'dir')
-          .map(item => item.name);
-      }
-      return [];
-    } catch (error: any) {
-      if (error.status === 404) {
-        return [];
-      }
-      throw error;
-    }
-  }
-
   async deleteFile(path: string, sha: string, message: string): Promise<void> {
     await this.octokit.rest.repos.deleteFile({
       owner: this.config.owner,

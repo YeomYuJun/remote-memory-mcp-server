@@ -1,214 +1,267 @@
 import { GitHubClient } from './github-client.js';
 import { MemoryGraphManager } from './memory-graph.js';
+import { MirrorManager, SyncBaseline } from './mirror-io.js';
+
+export type SyncStatus =
+  | 'pulled'
+  | 'pushed'
+  | 'diverged'
+  | 'remote-ahead'
+  | 'local-only'
+  | 'up-to-date';
 
 export interface SyncResult {
   success: boolean;
   conflictResolved: boolean;
   lastSync: string;
   error?: string;
-}
-
-export interface ProjectInfo {
-  name: string;
-  description?: string;
-  createdAt: string;
-}
-
-export interface ProjectIndex {
-  activeProject: string;
-  projects: ProjectInfo[];
-}
-
-const INDEX_FILE_PATH = 'memory/index.json';
-const DEFAULT_PROJECT = 'default';
-
-function getMemoryFilePath(project: string): string {
-  if (project === DEFAULT_PROJECT) {
-    return 'memory/graph.json';
-  }
-  return `memory/${project}/graph.json`;
+  status?: SyncStatus;
+  message?: string;
+  remoteSha?: string;
 }
 
 export class SyncManager {
   private githubClient: GitHubClient;
   private memoryManager: MemoryGraphManager;
+  private mirror: MirrorManager | null = null;
+  private baseline: SyncBaseline | null = null;
+  private readonly MEMORY_FILE_PATH = 'memory/graph.json';
   private syncInterval?: NodeJS.Timeout;
-  private activeProject: string = DEFAULT_PROJECT;
+  private isInitialLoad = true; // 초기 로드 상태 추적
 
   constructor(githubClient: GitHubClient, memoryManager: MemoryGraphManager) {
     this.githubClient = githubClient;
     this.memoryManager = memoryManager;
   }
 
-  getActiveProject(): string {
-    return this.activeProject;
+  /** Attach a mirror manager. Enables divergence guard via sidecar baseline. */
+  setMirror(mirror: MirrorManager): void {
+    this.mirror = mirror;
   }
 
-  // index.json 로드. 없으면 기본값 반환
-  async loadIndex(): Promise<ProjectIndex> {
-    const file = await this.githubClient.getFile(INDEX_FILE_PATH);
-    if (file) {
+  /** Bootstrap baseline from sidecar (must be called after setMirror + after initial graph load). */
+  async loadBaseline(): Promise<void> {
+    if (!this.mirror) return;
+    this.baseline = await this.mirror.readBaseline();
+  }
+
+  /**
+   * Capture and persist a fresh baseline from the current in-memory graph and
+   * a GitHub SHA the caller provides. Used when bootstrapping with an
+   * existing mirror file but no sidecar — we don't know how mirror compares
+   * to GitHub yet, so we snapshot "now" as the baseline (future drifts on
+   * either side will be detected).
+   */
+  async captureBaseline(remoteSha: string): Promise<void> {
+    await this.persistBaseline({ remoteSha, mirrorDigest: this.currentDigest() });
+  }
+
+  /** Used by bootstrap path that doesn't go through pullFromRemote. */
+  async fetchRemoteSha(): Promise<string | null> {
+    try {
+      const f = await this.githubClient.getFile(this.MEMORY_FILE_PATH);
+      return f?.sha ?? '';
+    } catch {
+      return null;
+    }
+  }
+
+  private async persistBaseline(b: SyncBaseline): Promise<void> {
+    this.baseline = b;
+    if (this.mirror) {
       try {
-        return JSON.parse(file.content) as ProjectIndex;
-      } catch {
-        // 파싱 실패 시 기본값
+        await this.mirror.writeBaseline(b);
+      } catch (e) {
+        console.error('[sync-manager] Baseline sidecar write failed:', e);
       }
     }
-    return { activeProject: DEFAULT_PROJECT, projects: [] };
   }
 
-  async saveIndex(index: ProjectIndex): Promise<void> {
-    const existing = await this.githubClient.getFile(INDEX_FILE_PATH);
-    await this.githubClient.putFile(
-      { path: INDEX_FILE_PATH, content: JSON.stringify(index, null, 2), sha: existing?.sha },
-      `chore: Update project index (active: ${index.activeProject})`
-    );
+  private currentDigest(): string {
+    return MirrorManager.digestGraph(this.memoryManager.getGraph());
   }
 
-  // 서버 시작 시 호출: index.json에서 activeProject 로드
-  // PROJECT_NAME 환경변수가 있으면 그것이 우선
-  async initializeProject(envProjectName?: string): Promise<void> {
-    const index = await this.loadIndex();
+  /**
+   * Pull from GitHub. With divergence guard:
+   *   - both sides changed since last pull → refuse, return status='diverged'
+   *   - only remote changed → normal pull
+   *   - only local changed → no-op, return status='local-only' (call sync_push instead)
+   *   - nothing changed → return status='up-to-date'
+   *
+   * opts.force skips the divergence check (used by forceSync).
+   */
+  async pullFromRemote(opts: { force?: boolean } = {}): Promise<SyncResult> {
+    const now = () => new Date().toISOString();
 
-    if (envProjectName) {
-      this.activeProject = envProjectName;
-    } else {
-      this.activeProject = index.activeProject || DEFAULT_PROJECT;
-    }
+    try {
+      // Pick up any external mirror writes (e.g. graph-view) before deciding.
+      if (this.mirror) {
+        try {
+          await this.mirror.maybeReload();
+        } catch {
+          /* ignore — fall through and let pull decide */
+        }
+      }
 
-    // default 프로젝트가 index에 없으면 추가
-    if (!index.projects.find(p => p.name === DEFAULT_PROJECT)) {
-      index.projects.unshift({ name: DEFAULT_PROJECT, createdAt: new Date().toISOString() });
-      await this.saveIndex(index);
-    }
-  }
+      const remoteFile = await this.githubClient.getFile(this.MEMORY_FILE_PATH);
 
-  async switchProject(projectName: string): Promise<void> {
-    const index = await this.loadIndex();
-    const exists = index.projects.find(p => p.name === projectName);
-    if (!exists) {
-      throw new Error(`Project '${projectName}' does not exist. Use create_project first.`);
-    }
-    index.activeProject = projectName;
-    await this.saveIndex(index);
-    this.activeProject = projectName;
+      // Remote does not exist
+      if (!remoteFile) {
+        if (!this.isInitialLoad) {
+          return await this.pushToRemote();
+        }
+        this.isInitialLoad = false;
+        await this.persistBaseline({ remoteSha: '', mirrorDigest: this.currentDigest() });
+        return { success: true, conflictResolved: false, lastSync: now(), status: 'up-to-date' };
+      }
 
-    // 전환 전에 memoryManager를 초기화하여 이전 프로젝트 데이터 오염 방지
-    this.memoryManager.fromJSON({ entities: {}, relations: [], metadata: { version: '1.0.0', lastModified: new Date().toISOString(), lastSync: new Date().toISOString() } });
+      const remoteSha = remoteFile.sha ?? '';
 
-    // 새 프로젝트 데이터 pull (없으면 빈 상태 유지, push 안 함)
-    const filePath = getMemoryFilePath(projectName);
-    const remoteFile = await this.githubClient.getFile(filePath);
-    if (remoteFile) {
+      // Divergence guard (only when we have a baseline and not forced)
+      if (!opts.force && this.baseline) {
+        const remoteChanged = remoteSha !== this.baseline.remoteSha;
+        const localChanged = this.currentDigest() !== this.baseline.mirrorDigest;
+
+        if (remoteChanged && localChanged) {
+          return {
+            success: false,
+            conflictResolved: false,
+            lastSync: now(),
+            error: 'diverged',
+            status: 'diverged',
+            message:
+              'Both local mirror and GitHub have changed since the last sync. ' +
+              'Automatic pull refused to prevent data loss. Options: ' +
+              '(1) call sync_push to publish local changes (if GitHub side is irrelevant), ' +
+              '(2) call force_sync to discard local and accept remote, ' +
+              '(3) inspect manually and resolve.',
+            remoteSha,
+          };
+        }
+
+        if (!remoteChanged && localChanged) {
+          return {
+            success: true,
+            conflictResolved: false,
+            lastSync: now(),
+            status: 'local-only',
+            message: 'Local mirror has unpublished changes; GitHub unchanged. Pull skipped — call sync_push when ready.',
+            remoteSha,
+          };
+        }
+
+        if (!remoteChanged && !localChanged) {
+          return { success: true, conflictResolved: false, lastSync: now(), status: 'up-to-date', remoteSha };
+        }
+        // remoteChanged && !localChanged → normal pull, fall through
+      }
+
+      // Apply remote
       const remoteData = JSON.parse(remoteFile.content);
       this.memoryManager.fromJSON(remoteData);
-    }
-    // 원격에 파일 없으면 빈 상태로 유지 (push 안 함)
-  }
+      this.isInitialLoad = false;
 
-  async createProject(name: string, description?: string): Promise<ProjectInfo> {
-    if (name === DEFAULT_PROJECT) {
-      throw new Error(`'${DEFAULT_PROJECT}' is reserved.`);
-    }
-    if (!/^[a-zA-Z0-9_-]+$/.test(name)) {
-      throw new Error(`Project name must be alphanumeric with hyphens/underscores only.`);
-    }
-
-    const index = await this.loadIndex();
-    if (index.projects.find(p => p.name === name)) {
-      throw new Error(`Project '${name}' already exists.`);
-    }
-
-    const info: ProjectInfo = { name, description, createdAt: new Date().toISOString() };
-    index.projects.push(info);
-    await this.saveIndex(index);
-    return info;
-  }
-
-  async listProjects(): Promise<ProjectIndex> {
-    return await this.loadIndex();
-  }
-
-  private memoryFilePath(project?: string): string {
-    return getMemoryFilePath(project ?? this.activeProject);
-  }
-
-  async pullFromRemote(project?: string): Promise<SyncResult> {
-    const filePath = this.memoryFilePath(project);
-    try {
-      const remoteFile = await this.githubClient.getFile(filePath);
-
-      if (remoteFile) {
-        const remoteData = JSON.parse(remoteFile.content);
-        const localGraph = this.memoryManager.getGraph();
-        const conflictResolved = await this.resolveConflicts(localGraph, remoteData, project);
-        this.memoryManager.fromJSON(remoteData);
-        return { success: true, conflictResolved, lastSync: new Date().toISOString() };
-      } else {
-        // 원격에 파일 없음 → 빈 상태 유지, push 안 함
-        return { success: true, conflictResolved: false, lastSync: new Date().toISOString() };
+      // Reflect into mirror (so graph-view sees the update on next poll)
+      if (this.mirror) {
+        try {
+          await this.mirror.writeMirror();
+        } catch (e) {
+          console.error('[sync-manager] Mirror write after pull failed:', e);
+        }
       }
+
+      await this.persistBaseline({ remoteSha, mirrorDigest: this.currentDigest() });
+      return { success: true, conflictResolved: false, lastSync: now(), status: 'pulled', remoteSha };
     } catch (error) {
+      this.isInitialLoad = false;
       return {
         success: false,
         conflictResolved: false,
-        lastSync: new Date().toISOString(),
+        lastSync: now(),
         error: error instanceof Error ? error.message : 'Unknown error',
       };
     }
   }
 
-  async pushToRemote(commitMessage?: string, project?: string): Promise<SyncResult> {
-    const filePath = this.memoryFilePath(project);
+  /**
+   * Push to GitHub. With non-fast-forward guard:
+   *   - GitHub has changed since last pull → refuse, return status='remote-ahead'
+   *
+   * opts.force skips the check (used by forceSync).
+   */
+  async pushToRemote(commitMessage?: string, opts: { force?: boolean } = {}): Promise<SyncResult> {
+    const now = () => new Date().toISOString();
+
     try {
+      if (this.mirror) {
+        try {
+          await this.mirror.maybeReload();
+        } catch {
+          /* ignore */
+        }
+      }
+
       const localData = this.memoryManager.toJSON();
 
+      // Skip empty-graph push (matches prior behavior)
       if (
         Object.keys(localData.entities || {}).length === 0 &&
         (!localData.relations || localData.relations.length === 0)
       ) {
-        return { success: true, conflictResolved: false, lastSync: new Date().toISOString() };
+        return { success: true, conflictResolved: false, lastSync: now(), status: 'up-to-date' };
+      }
+
+      const existingFile = await this.githubClient.getFile(this.MEMORY_FILE_PATH);
+      const existingSha = existingFile?.sha ?? '';
+
+      // Non-fast-forward guard
+      if (!opts.force && this.baseline && existingSha !== this.baseline.remoteSha) {
+        return {
+          success: false,
+          conflictResolved: false,
+          lastSync: now(),
+          error: 'remote-ahead',
+          status: 'remote-ahead',
+          message:
+            'GitHub has changed since the last sync. Refusing push to prevent overwriting remote work. ' +
+            'Call sync_pull first (resolve any divergence) or force_sync to overwrite.',
+          remoteSha: existingSha,
+        };
       }
 
       const content = JSON.stringify(localData, null, 2);
-      const existingFile = await this.githubClient.getFile(filePath);
-      const defaultMessage = `Update memory graph - ${new Date().toISOString()}`;
-
+      const defaultMessage = `Update memory graph - ${now()}`;
       await this.githubClient.putFile(
-        { path: filePath, content, sha: existingFile?.sha },
+        { path: this.MEMORY_FILE_PATH, content, sha: existingFile?.sha },
         commitMessage || defaultMessage
       );
 
+      // Refetch SHA (Octokit putFile is void in our wrapper). Used to update baseline.
+      const afterPush = await this.githubClient.getFile(this.MEMORY_FILE_PATH);
+      const newSha = afterPush?.sha ?? '';
+
+      // Update last-sync metadata
       const graph = this.memoryManager.getGraph();
-      graph.metadata.lastSync = new Date().toISOString();
+      graph.metadata.lastSync = now();
       this.memoryManager.loadGraph(graph);
 
-      return { success: true, conflictResolved: false, lastSync: new Date().toISOString() };
+      await this.persistBaseline({ remoteSha: newSha, mirrorDigest: this.currentDigest() });
+      return { success: true, conflictResolved: false, lastSync: now(), status: 'pushed', remoteSha: newSha };
     } catch (error) {
       return {
         success: false,
         conflictResolved: false,
-        lastSync: new Date().toISOString(),
+        lastSync: now(),
         error: error instanceof Error ? error.message : 'Unknown error',
       };
     }
-  }
-
-  private async resolveConflicts(localGraph: any, remoteGraph: any, project?: string): Promise<boolean> {
-    const localModified = new Date(localGraph.metadata.lastModified);
-    const remoteModified = new Date(remoteGraph.metadata.lastModified);
-
-    if (localModified > remoteModified) {
-      await this.pushToRemote(undefined, project);
-      return true;
-    }
-    return false;
   }
 
   startAutoSync(intervalSeconds: number): void {
     if (this.syncInterval) {
       clearInterval(this.syncInterval);
     }
+
     this.syncInterval = setInterval(async () => {
       await this.pullFromRemote();
     }, intervalSeconds * 1000);
@@ -221,28 +274,32 @@ export class SyncManager {
     }
   }
 
-  async forcePush(project?: string): Promise<SyncResult> {
-    return await this.pushToRemote(undefined, project);
+  async forcePush(): Promise<SyncResult> {
+    return await this.pushToRemote(undefined, { force: true });
   }
 
-  async forceSync(project?: string): Promise<SyncResult> {
-    const pullResult = await this.pullFromRemote(project);
+  /**
+   * Escape hatch: pull (force) then push (force). Bypasses the divergence
+   * guard entirely. User invokes this when they have manually decided how to
+   * resolve a 'diverged' situation.
+   */
+  async forceSync(): Promise<SyncResult> {
+    const pullResult = await this.pullFromRemote({ force: true });
     if (pullResult.success) {
-      return await this.pushToRemote(undefined, project);
+      return await this.pushToRemote(undefined, { force: true });
     }
     return pullResult;
   }
 
-  async getCommitHistory(limit: number = 10, project?: string): Promise<any[]> {
+  async getCommitHistory(limit: number = 10): Promise<any[]> {
     try {
-      const filePath = this.memoryFilePath(project);
-      const response = await this.githubClient.getCommits(filePath, limit);
+      const response = await this.githubClient.getCommits(this.MEMORY_FILE_PATH, limit);
       return response.map(commit => ({
         sha: commit.sha.substring(0, 7),
         message: commit.commit.message,
         author: commit.commit.author.name,
         date: commit.commit.author.date,
-        url: commit.html_url,
+        url: commit.html_url
       }));
     } catch (error) {
       console.error('Failed to get commit history:', error);

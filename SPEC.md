@@ -1,121 +1,103 @@
-# Remote Memory MCP Server API Specification
+# Remote Memory MCP Server API 사양서
 
-This document provides detailed API usage and examples for the Remote Memory MCP Server.
+이 문서는 Remote Memory MCP Server의 상세한 API 사용법과 예제를 제공합니다.
 
-## Overview
+## 개요
 
-Remote Memory MCP Server provides 20 tools across 4 categories:
+Remote Memory MCP Server는 다음과 같은 도구들을 제공합니다:
 
-- **Project Management** (v1.4.0+): `list_projects`, `create_project`, `switch_project`
-- **Entity Management**: `create_entities`, `delete_entities`, `open_nodes`, `search_nodes`
-- **Entity Query** (v1.3.0+): `list_entities`, `get_entity_names`, `get_entity_types`
-- **Relation Management**: `create_relations`, `delete_relations`
-- **Observation Management**: `add_observations`, `delete_observations`
-- **Synchronization**: `sync_pull`, `sync_push`, `force_sync`
-- **Backup/History**: `create_backup`, `get_commit_history`
-- **Full Query**: `read_graph`
+- **엔티티 조회** (v1.3.0+): `get_entity_types`, `get_entity_names`, `list_entities`
+- **엔티티 관리**: `create_entities`, `delete_entities`, `open_nodes`, `search_nodes`
+- **관계 관리**: `create_relations`, `delete_relations`
+- **관찰 내용 관리**: `add_observations`, `delete_observations`
+- **동기화**: `sync_pull`, `sync_push`, `force_sync`
+- **백업/히스토리**: `create_backup`, `get_commit_history`
+- **조회**: `read_graph`
 
-### Common Parameter: `project`
+## 엔티티 조회 (v1.3.0+)
 
-All tools (except project management tools) accept an optional `project` parameter.
-- **Omitted**: operates on the current active project
-- **Specified**: targets that specific project without changing the active project
+### 엔티티 타입 통계 (`get_entity_types`)
 
-```typescript
-// Active project (default behavior)
-create_entities({ entities: [...] })
-
-// Target a specific project without switching
-create_entities({ entities: [...], project: "blog" })
-```
-
----
-
-## Project Management (v1.4.0+)
-
-Projects isolate memory data per context (e.g., per codebase, per client, per domain).
-Each project is stored as a separate file in the GitHub repository.
-
-### Repository structure
-
-```
-memory/
-├── index.json           ← project index + active project pointer
-├── graph.json           ← "default" project (backward compatible)
-└── blog/
-    └── graph.json       ← "blog" project
-└── my-app/
-    └── graph.json       ← "my-app" project
-```
-
-### List Projects (`list_projects`)
-
-Returns all projects and the currently active project.
+엔티티 타입별 개수를 조회합니다.
 
 ```typescript
-list_projects()
+get_entity_types()
 ```
 
-**Response**:
+**응답 예시**:
 ```json
 {
   "success": true,
-  "activeProject": "blog",
-  "projects": [
-    { "name": "default", "createdAt": "2025-01-01T00:00:00.000Z" },
-    { "name": "blog", "description": "Blog project memory", "createdAt": "2025-03-01T00:00:00.000Z" }
+  "types": [
+    { "type": "Person", "count": 45 },
+    { "type": "Company", "count": 23 }
   ],
-  "count": 2
+  "totalTypes": 2,
+  "totalEntities": 68
 }
 ```
 
-### Create Project (`create_project`)
+### 엔티티 이름 목록 (`get_entity_names`)
 
-Creates a new project. Does **not** switch to it automatically.
+엔티티 이름만 빠르게 조회합니다.
 
 ```typescript
-create_project({
-  name: "my-app",           // required: alphanumeric, hyphens, underscores only
-  description: "My app"     // optional
+get_entity_names({
+  entityType: "Person",  // optional
+  sortBy: "name",        // optional: createdAt, updatedAt, name
+  sortOrder: "asc"       // optional: asc, desc
 })
 ```
 
-**Response**:
+**응답 예시**:
 ```json
 {
   "success": true,
-  "message": "Project 'my-app' created. Use switch_project to activate it.",
-  "project": {
-    "name": "my-app",
-    "description": "My app",
-    "createdAt": "2025-03-27T00:00:00.000Z"
-  }
+  "names": ["Alice", "Bob", "Charlie"],
+  "count": 3
 }
 ```
 
-### Switch Project (`switch_project`)
+### 엔티티 목록 조회 (`list_entities`)
 
-Switches the active project and immediately loads its data.
-The switch is persisted to `memory/index.json` in GitHub.
+필터링과 페이지네이션을 지원하는 엔티티 목록 조회입니다.
 
 ```typescript
-switch_project({ project: "blog" })
+list_entities({
+  entityType: "Person",               // optional
+  sortBy: "createdAt",               // optional: createdAt, updatedAt, name
+  sortOrder: "desc",                 // optional: asc, desc
+  dateFrom: "2025-01-01T00:00:00Z", // optional
+  dateTo: "2025-01-31T23:59:59Z",   // optional
+  limit: 50,                         // optional, default: 50
+  offset: 0                          // optional, default: 0
+})
 ```
 
-**Response**:
+**응답 예시**:
 ```json
 {
   "success": true,
-  "message": "Switched to project 'blog'. Memory loaded.",
-  "activeProject": "blog"
+  "entities": [
+    {
+      "name": "Alice",
+      "entityType": "Person",
+      "observations": ["Software engineer"],
+      "createdAt": "2025-01-15T10:30:00Z",
+      "updatedAt": "2025-01-18T14:22:00Z"
+    }
+  ],
+  "count": 1,
+  "total": 45,
+  "hasMore": true
 }
 ```
 
----
+## 엔티티 관리
 
-## Entity Management
+### 엔티티 생성 (`create_entities`)
 
-### Create Entities (`create_entities`)
+새로운 엔티티들을 생성합니다.
 
 ```typescript
 create_entities({
@@ -124,39 +106,43 @@ create_entities({
       name: "Kim Kim",
       entityType: "Person",
       observations: ["Software developer", "Lives in Seoul"]
+    },
+    {
+      name: "KimCorp",
+      entityType: "Company", 
+      observations: ["AI startup", "Founded in 2023"]
     }
-  ],
-  project: "blog"  // optional
+  ]
 })
 ```
 
-**Parameters**:
-- `entities`: Array of entities
-  - `name` (string): Unique identifier
-  - `entityType` (string): Category (Person, Company, Project, etc.)
-  - `observations` (string[]): Facts about the entity
-- `project` (string, optional): Target project
+**파라미터**:
+- `entities`: 생성할 엔티티 배열
+  - `name` (string): 엔티티 이름 (고유 식별자)
+  - `entityType` (string): 엔티티 타입 (Person, Company, Project 등)
+  - `observations` (string[]): 관찰 내용 배열
 
-**Response**:
+**응답 예시**:
 ```json
 {
   "success": true,
-  "message": "Created 1 entities",
-  "entities": ["Kim Kim"],
-  "project": "blog"
+  "message": "Created 2 entities",
+  "entities": ["Kim Kim", "KimCorp"]
 }
 ```
 
-### Search Entities (`search_nodes`)
+### 엔티티 검색 (`search_nodes`)
+
+키워드로 엔티티를 검색합니다.
 
 ```typescript
-search_nodes({
-  query: "developer",
-  project: "blog"   // optional
-})
+search_nodes({ query: "developer" })
 ```
 
-**Response**:
+**파라미터**:
+- `query` (string): 검색 키워드 (이름, 타입, 관찰 내용에서 검색)
+
+**응답 예시**:
 ```json
 {
   "success": true,
@@ -170,237 +156,327 @@ search_nodes({
       "updatedAt": "2025-01-01T00:00:00.000Z"
     }
   ],
-  "count": 1,
-  "project": "blog"
+  "count": 1
 }
 ```
 
-### Retrieve Specific Entities (`open_nodes`)
+### 특정 엔티티 조회 (`open_nodes`)
+
+이름으로 특정 엔티티들을 조회합니다.
 
 ```typescript
-open_nodes({
-  names: ["Kim Kim", "KimCorp"],
-  project: "blog"  // optional
-})
+open_nodes({ names: ["Kim Kim", "KimCorp"] })
 ```
 
-**Response**:
+**파라미터**:
+- `names` (string[]): 조회할 엔티티 이름 배열
+
+**응답 예시**:
 ```json
 {
   "success": true,
   "requestedNames": ["Kim Kim", "KimCorp"],
-  "nodes": [...],
-  "found": 1,
-  "requested": 2,
-  "project": "blog"
-}
-```
-
-### Delete Entities (`delete_entities`)
-
-Deletes entities and all associated relations.
-
-```typescript
-delete_entities({
-  entityNames: ["Kim Kim"],
-  project: "blog"  // optional
-})
-```
-
----
-
-## Entity Query (v1.3.0+)
-
-### Entity Type Statistics (`get_entity_types`)
-
-```typescript
-get_entity_types({ project: "blog" })  // project optional
-```
-
-**Response**:
-```json
-{
-  "success": true,
-  "types": [
-    { "type": "Person", "count": 45 },
-    { "type": "Company", "count": 23 }
+  "nodes": [
+    {
+      "name": "Kim Kim",
+      "entityType": "Person",
+      "observations": ["Software developer", "Lives in Seoul"],
+      "createdAt": "2025-01-01T00:00:00.000Z",
+      "updatedAt": "2025-01-01T00:00:00.000Z"
+    }
   ],
-  "totalTypes": 2,
-  "totalEntities": 68,
-  "project": "blog"
+  "found": 1,
+  "requested": 2
 }
 ```
 
-### Entity Name List (`get_entity_names`)
+### 엔티티 삭제 (`delete_entities`)
+
+엔티티와 관련된 모든 관계를 삭제합니다.
 
 ```typescript
-get_entity_names({
-  entityType: "Person",   // optional
-  sortBy: "name",         // optional: createdAt | updatedAt | name
-  sortOrder: "asc",       // optional: asc | desc
-  project: "blog"         // optional
-})
+delete_entities({ entityNames: ["Kim Kim"] })
 ```
 
-**Response**:
+**파라미터**:
+- `entityNames` (string[]): 삭제할 엔티티 이름 배열
+
+**응답 예시**:
 ```json
 {
   "success": true,
-  "names": ["Alice", "Bob", "Charlie"],
-  "count": 3,
-  "project": "blog"
+  "message": "Deleted entities: Kim Kim",
+  "deletedEntities": ["Kim Kim"]
 }
 ```
 
-### Entity List (`list_entities`)
+## 관계 관리
 
-```typescript
-list_entities({
-  entityType: "Person",
-  sortBy: "createdAt",
-  sortOrder: "desc",
-  dateFrom: "2025-01-01T00:00:00Z",
-  dateTo: "2025-01-31T23:59:59Z",
-  limit: 50,
-  offset: 0,
-  project: "blog"   // optional
-})
-```
+### 관계 생성 (`create_relations`)
 
-**Response**:
-```json
-{
-  "success": true,
-  "entities": [...],
-  "count": 1,
-  "total": 45,
-  "offset": 0,
-  "limit": 50,
-  "hasMore": true,
-  "project": "blog"
-}
-```
-
----
-
-## Relation Management
-
-### Create Relations (`create_relations`)
+엔티티 간의 관계를 생성합니다.
 
 ```typescript
 create_relations({
   relations: [
-    { from: "Kim Kim", to: "KimCorp", relationType: "works_at" }
-  ],
-  project: "blog"  // optional
+    {
+      from: "Kim Kim",
+      to: "KimCorp",
+      relationType: "works_at"
+    },
+    {
+      from: "Kim Kim", 
+      to: "AI Project",
+      relationType: "leads"
+    }
+  ]
 })
 ```
 
-### Delete Relations (`delete_relations`)
+**파라미터**:
+- `relations`: 생성할 관계 배열
+  - `from` (string): 관계의 시작 엔티티 이름
+  - `to` (string): 관계의 대상 엔티티 이름  
+  - `relationType` (string): 관계 타입 (works_at, leads, belongs_to 등)
+
+**응답 예시**:
+```json
+{
+  "success": true,
+  "message": "Created 2 relations",
+  "relations": [
+    {
+      "from": "Kim Kim",
+      "to": "KimCorp", 
+      "relationType": "works_at"
+    }
+  ]
+}
+```
+
+### 관계 삭제 (`delete_relations`)
+
+특정 관계를 삭제합니다.
 
 ```typescript
 delete_relations({
   relations: [
-    { from: "Kim Kim", to: "KimCorp", relationType: "works_at" }
-  ],
-  project: "blog"  // optional
+    {
+      from: "Kim Kim",
+      to: "KimCorp",
+      relationType: "works_at"
+    }
+  ]
 })
 ```
 
----
+**파라미터**:
+- `relations`: 삭제할 관계 배열 (from, to, relationType 모두 일치해야 함)
 
-## Observation Management
+## 관찰 내용 관리
 
-### Add Observations (`add_observations`)
+### 관찰 내용 추가 (`add_observations`)
+
+기존 엔티티에 새로운 관찰 내용을 추가합니다.
 
 ```typescript
 add_observations({
   observations: [
-    { entityName: "Kim Kim", contents: ["Expert in TypeScript"] }
-  ],
-  project: "blog"  // optional
+    {
+      entityName: "Kim Kim",
+      contents: ["Speaks Korean fluently", "Expert in TypeScript"]
+    },
+    {
+      entityName: "KimCorp",
+      contents: ["Remote-first company", "15 employees"]
+    }
+  ]
 })
 ```
 
-### Delete Observations (`delete_observations`)
+**파라미터**:
+- `observations`: 추가할 관찰 내용 배열
+  - `entityName` (string): 대상 엔티티 이름
+  - `contents` (string[]): 추가할 관찰 내용 배열
+
+**응답 예시**:
+```json
+{
+  "success": true,
+  "message": "Added observations",
+  "observations": [
+    {
+      "entityName": "Kim Kim",
+      "contents": ["Speaks Korean fluently", "Expert in TypeScript"]
+    }
+  ]
+}
+```
+
+### 관찰 내용 삭제 (`delete_observations`)
+
+엔티티에서 특정 관찰 내용을 삭제합니다.
 
 ```typescript
 delete_observations({
   deletions: [
-    { entityName: "Kim Kim", observations: ["Lives in Seoul"] }
-  ],
-  project: "blog"  // optional
+    {
+      entityName: "Kim Kim", 
+      observations: ["Lives in Seoul"]
+    }
+  ]
 })
 ```
 
----
+**파라미터**:
+- `deletions`: 삭제할 관찰 내용 배열
+  - `entityName` (string): 대상 엔티티 이름
+  - `observations` (string[]): 삭제할 관찰 내용 배열 (정확히 일치해야 함)
 
-## Synchronization
+## 동기화 연산
 
-All sync tools accept an optional `project` parameter.
+### 원격에서 풀 (`sync_pull`)
 
-### Pull from Remote (`sync_pull`)
-
-```typescript
-sync_pull({ project: "blog" })  // project optional
-```
-
-### Push to Remote (`sync_push`)
+GitHub에서 최신 데이터를 가져와 로컬과 동기화합니다.
 
 ```typescript
-sync_push({ commitMessage: "Update project data", project: "blog" })
+sync_pull()
 ```
 
-### Force Sync (`force_sync`)
-
-```typescript
-force_sync({ project: "blog" })
-```
-
----
-
-## Backup and History
-
-### Create Backup (`create_backup`)
-
-Backup is stored under `backups/{project}/` in the repository.
-
-```typescript
-create_backup({ backupName: "stable-v2.0", project: "blog" })
-```
-
-**Response**:
+**응답 예시**:
 ```json
 {
+  "operation": "sync_pull",
   "success": true,
-  "backupName": "stable-v2.0",
-  "backupPath": "backups/blog/stable-v2.0.json",
-  "project": "blog",
-  "timestamp": "2025-03-27T00:00:00.000Z"
+  "conflictResolved": false,
+  "lastSync": "2025-01-01T00:00:00.000Z"
 }
 ```
 
-### Get Commit History (`get_commit_history`)
+### 원격으로 푸시 (`sync_push`)
+
+로컬 데이터를 GitHub 저장소로 푸시합니다.
 
 ```typescript
-get_commit_history({ limit: 5, project: "blog" })
+// 기본 푸시
+sync_push()
+
+// 커스텀 메시지로 푸시
+sync_push({ commitMessage: "프로젝트 데이터 업데이트" })
 ```
 
----
-
-## Full Query
-
-### Read Graph (`read_graph`)
-
-```typescript
-read_graph({ project: "blog" })  // project optional
-```
-
-**Response**:
+**응답 예시**:
 ```json
 {
-  "entities": { ... },
-  "relations": [ ... ],
+  "operation": "sync_push",
+  "success": true,
+  "conflictResolved": false,
+  "lastSync": "2025-01-01T00:00:00.000Z"
+}
+```
+
+### 강제 동기화 (`force_sync`)
+
+충돌을 무시하고 양방향 동기화를 수행합니다.
+
+```typescript
+force_sync()
+```
+
+**응답 예시**:
+```json
+{
+  "operation": "force_sync", 
+  "success": true,
+  "conflictResolved": true,
+  "lastSync": "2025-01-01T00:00:00.000Z"
+}
+```
+
+## 백업 및 히스토리 관리
+
+### 백업 생성 (`create_backup`)
+
+현재 메모리 상태의 백업을 생성합니다.
+
+```typescript
+// 자동 이름으로 백업
+create_backup()
+
+// 커스텀 이름으로 백업  
+create_backup({ backupName: "stable-v2.0" })
+```
+
+**응답 예시**:
+```json
+{
+  "success": true,
+  "backupName": "backup-2025-01-01T10:30:00.000Z",
+  "message": "Backup created successfully"
+}
+```
+
+### 커밋 히스토리 조회 (get_commit_history)
+
+GitHub 저장소의 최근 커밋 히스토리를 조회합니다.
+
+```typescript
+// 기본 10개 조회
+get_commit_history()
+
+// 원하는 개수만 조회
+get_commit_history({ limit: 5 })
+```
+**파라미터**:
+- `limit`: 조회할 커밋 개수 (기본값: 10)
+
+**응답 예시**:
+```json
+{
+  "success": true,
+  "commits": [
+    {
+      "sha": "abc123...",
+      "message": "feat: Add 2 entities (John Doe, Company ABC)",
+      "author": "username",
+      "date": "2025-01-01T10:30:00Z",
+      "url": "https://github.com/user/repo/commit/abc123..."
+    }
+  ],
+  "count": 5
+}
+```
+
+## 전체 조회
+
+### 전체 그래프 읽기 (`read_graph`)
+
+전체 지식 그래프를 조회합니다.
+
+```typescript
+read_graph()
+```
+
+**응답 예시**:
+```json
+{
+  "entities": {
+    "Kim Kim": {
+      "name": "Kim Kim",
+      "entityType": "Person",
+      "observations": ["Software developer", "Lives in Seoul"],
+      "createdAt": "2025-01-01T00:00:00.000Z",
+      "updatedAt": "2025-01-01T00:00:00.000Z"
+    }
+  },
+  "relations": [
+    {
+      "from": "Kim Kim",
+      "to": "KimCorp",
+      "relationType": "works_at", 
+      "createdAt": "2025-01-01T00:00:00.000Z"
+    }
+  ],
   "metadata": {
     "version": "1.0.0",
     "lastModified": "2025-01-01T00:00:00.000Z",
@@ -408,293 +484,19 @@ read_graph({ project: "blog" })  // project optional
   },
   "summary": {
     "entityCount": 1,
-    "relationCount": 1
-  },
-  "project": "blog"
-}
-```
-
----
-
-## Configuration
-
-### Environment Variables
-
-| Variable | Required | Default | Description |
-|---|---|---|---|
-| `GITHUB_TOKEN` | Yes | — | Personal Access Token (repo scope) |
-| `GITHUB_OWNER` | Yes | — | Repository owner |
-| `GITHUB_REPO` | Yes | — | Repository name |
-| `GITHUB_BRANCH` | No | `main` | Branch to use |
-| `SYNC_INTERVAL` | No | `0` | Auto-pull interval in seconds (0 = manual) |
-| `AUTO_PUSH` | No | `false` | Auto-push after CRUD operations |
-| `PROJECT_NAME` | No | from `index.json` | Override active project on startup |
-
-### Priority for active project
-
-`PROJECT_NAME` env var → `index.json` activeProject field → `"default"`
-
----
-
-## Error Handling
-
-```json
-{
-  "success": false,
-  "error": "Error message here"
-}
-```
-
-Common errors:
-- Project not found → use `create_project` first
-- Invalid project name → alphanumeric, hyphens, underscores only
-- GitHub API rate limit exceeded → 5,000 requests/hour
-
----
-
-## Limitations
-
-- Entity names must be unique **within a project**
-- GitHub API rate limit: 5,000 requests/hour
-- Network connection required for sync operations
-- Project name: alphanumeric, hyphens (`-`), underscores (`_`) only; `"default"` is reserved
-
----
-
-## Usage Example (Link)
-
-https://github.com/YeomYuJun/remote_memory/blob/main/memory/graph.json
-
----
-
-# Remote Memory MCP Server API 사양서
-
-## 개요
-
-Remote Memory MCP Server는 4개 카테고리의 20개 도구를 제공합니다:
-
-- **프로젝트 관리** (v1.4.0+): `list_projects`, `create_project`, `switch_project`
-- **엔티티 관리**: `create_entities`, `delete_entities`, `open_nodes`, `search_nodes`
-- **엔티티 조회** (v1.3.0+): `list_entities`, `get_entity_names`, `get_entity_types`
-- **관계 관리**: `create_relations`, `delete_relations`
-- **관찰 내용 관리**: `add_observations`, `delete_observations`
-- **동기화**: `sync_pull`, `sync_push`, `force_sync`
-- **백업/히스토리**: `create_backup`, `get_commit_history`
-- **전체 조회**: `read_graph`
-
-### 공통 파라미터: `project`
-
-프로젝트 관리 도구를 제외한 **모든 도구**에 선택적 `project` 파라미터가 있습니다.
-- **생략 시**: 현재 활성 프로젝트에 동작
-- **지정 시**: 활성 프로젝트를 변경하지 않고 해당 프로젝트를 대상으로 동작
-
-```typescript
-// 활성 프로젝트에 동작 (기본)
-create_entities({ entities: [...] })
-
-// 활성 프로젝트 변경 없이 특정 프로젝트 대상
-create_entities({ entities: [...], project: "blog" })
-```
-
----
-
-## 프로젝트 관리 (v1.4.0+)
-
-프로젝트는 컨텍스트별(코드베이스, 클라이언트, 도메인 등)로 메모리 데이터를 격리합니다.
-각 프로젝트는 GitHub 저장소의 별도 파일로 저장됩니다.
-
-### 저장소 구조
-
-```
-memory/
-├── index.json           ← 프로젝트 인덱스 + 활성 프로젝트 포인터
-├── graph.json           ← "default" 프로젝트 (하위 호환)
-└── blog/
-    └── graph.json       ← "blog" 프로젝트
-└── my-app/
-    └── graph.json       ← "my-app" 프로젝트
-```
-
-### 프로젝트 목록 조회 (`list_projects`)
-
-모든 프로젝트와 현재 활성 프로젝트를 반환합니다.
-
-```typescript
-list_projects()
-```
-
-**응답**:
-```json
-{
-  "success": true,
-  "activeProject": "blog",
-  "projects": [
-    { "name": "default", "createdAt": "2025-01-01T00:00:00.000Z" },
-    { "name": "blog", "description": "블로그 프로젝트 메모리", "createdAt": "2025-03-01T00:00:00.000Z" }
-  ],
-  "count": 2
-}
-```
-
-### 프로젝트 생성 (`create_project`)
-
-새 프로젝트를 생성합니다. 생성 후 자동으로 전환되지 않습니다.
-
-```typescript
-create_project({
-  name: "my-app",           // 필수: 영문자, 숫자, 하이픈, 언더스코어만
-  description: "내 앱"      // 선택
-})
-```
-
-**응답**:
-```json
-{
-  "success": true,
-  "message": "Project 'my-app' created. Use switch_project to activate it.",
-  "project": {
-    "name": "my-app",
-    "description": "내 앱",
-    "createdAt": "2025-03-27T00:00:00.000Z"
+    "relationCount": 1,
+    "lastModified": "2025-01-01T00:00:00.000Z",
+    "lastSync": "2025-01-01T00:00:00.000Z"
   }
 }
 ```
 
-### 프로젝트 전환 (`switch_project`)
-
-활성 프로젝트를 변경하고 즉시 해당 프로젝트 데이터를 로드합니다.
-전환 내용은 GitHub의 `memory/index.json`에 영속적으로 저장됩니다.
-
-```typescript
-switch_project({ project: "blog" })
-```
-
-**응답**:
-```json
-{
-  "success": true,
-  "message": "Switched to project 'blog'. Memory loaded.",
-  "activeProject": "blog"
-}
-```
-
----
-
-## 엔티티 관리
-
-### 엔티티 생성 (`create_entities`)
-
-```typescript
-create_entities({
-  entities: [
-    {
-      name: "Kim Kim",
-      entityType: "Person",
-      observations: ["Software developer", "Lives in Seoul"]
-    }
-  ],
-  project: "blog"  // 선택
-})
-```
-
-### 엔티티 검색 (`search_nodes`)
-
-```typescript
-search_nodes({ query: "developer", project: "blog" })
-```
-
-### 특정 엔티티 조회 (`open_nodes`)
-
-```typescript
-open_nodes({ names: ["Kim Kim", "KimCorp"], project: "blog" })
-```
-
-### 엔티티 삭제 (`delete_entities`)
-
-엔티티와 관련 관계를 모두 삭제합니다.
-
-```typescript
-delete_entities({ entityNames: ["Kim Kim"], project: "blog" })
-```
-
----
-
-## 관계 관리
-
-```typescript
-create_relations({
-  relations: [{ from: "Kim Kim", to: "KimCorp", relationType: "works_at" }],
-  project: "blog"  // 선택
-})
-
-delete_relations({
-  relations: [{ from: "Kim Kim", to: "KimCorp", relationType: "works_at" }],
-  project: "blog"  // 선택
-})
-```
-
----
-
-## 관찰 내용 관리
-
-```typescript
-add_observations({
-  observations: [{ entityName: "Kim Kim", contents: ["Expert in TypeScript"] }],
-  project: "blog"  // 선택
-})
-
-delete_observations({
-  deletions: [{ entityName: "Kim Kim", observations: ["Lives in Seoul"] }],
-  project: "blog"  // 선택
-})
-```
-
----
-
-## 동기화
-
-모든 동기화 도구에 선택적 `project` 파라미터를 지원합니다.
-
-```typescript
-sync_pull({ project: "blog" })
-sync_push({ commitMessage: "업데이트", project: "blog" })
-force_sync({ project: "blog" })
-```
-
----
-
-## 백업 및 히스토리
-
-백업은 저장소의 `backups/{project}/` 하위에 저장됩니다.
-
-```typescript
-create_backup({ backupName: "stable-v2.0", project: "blog" })
-get_commit_history({ limit: 5, project: "blog" })
-```
-
----
-
-## 설정
-
-### 환경 변수
-
-| 변수 | 필수 | 기본값 | 설명 |
-|---|---|---|---|
-| `GITHUB_TOKEN` | 필수 | — | Personal Access Token (repo 권한) |
-| `GITHUB_OWNER` | 필수 | — | 저장소 소유자 |
-| `GITHUB_REPO` | 필수 | — | 저장소 이름 |
-| `GITHUB_BRANCH` | 선택 | `main` | 사용할 브랜치 |
-| `SYNC_INTERVAL` | 선택 | `0` | 자동 pull 간격(초), 0=수동 |
-| `AUTO_PUSH` | 선택 | `false` | CRUD 후 자동 push 여부 |
-| `PROJECT_NAME` | 선택 | `index.json`에서 | 시작 시 활성 프로젝트 override |
-
-### 활성 프로젝트 우선순위
-
-`PROJECT_NAME` 환경변수 → `index.json`의 activeProject → `"default"`
-
----
+## 사용 예시
+Link : https://github.com/YeomYuJun/remote_memory/blob/main/memory/graph.json
 
 ## 에러 처리
+
+모든 API 호출에서 에러가 발생할 경우 다음과 같은 형식으로 응답됩니다:
 
 ```json
 {
@@ -703,16 +505,20 @@ get_commit_history({ limit: 5, project: "blog" })
 }
 ```
 
-주요 에러:
-- 프로젝트 없음 → `create_project` 먼저 실행
-- 잘못된 프로젝트 이름 → 영문자, 숫자, 하이픈, 언더스코어만 허용
-- GitHub API 한도 초과 → 시간당 5,000 요청 제한
-
----
-
 ## 제한사항
 
-- 엔티티 이름은 **프로젝트 내에서** 고유해야 함
+- 엔티티 이름은 고유해야 함
 - GitHub API rate limit: 시간당 5,000 요청
+- 최대 파일 크기: 100MB (GitHub 제한)
 - 네트워크 연결 필수 (동기화 시)
-- 프로젝트 이름: 영문자, 숫자, 하이픈(`-`), 언더스코어(`_`)만 허용; `"default"` 예약어
+
+## 동기화 동작
+
+### 자동 푸시 설정 (AUTO_PUSH)
+- `AUTO_PUSH=true`: 모든 CRUD 작업 후 자동으로 GitHub에 푸시
+- `AUTO_PUSH=false` (기본값): 수동으로 `sync_push` 호출 시에만 푸시
+
+### 초기화 동작
+- 서버 시작 시 원격 저장소에서 데이터를 가져옴
+- 원격에 파일이 없어도 빈 상태로 자동 푸시하지 않음
+- 데이터가 있는 경우에만 푸시 수행
