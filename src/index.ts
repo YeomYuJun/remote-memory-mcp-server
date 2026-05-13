@@ -12,6 +12,7 @@ import {
 import { GitHubClient, GitHubConfig } from './github-client.js';
 import { MemoryGraphManager } from './memory-graph.js';
 import { SyncManager } from './sync-manager.js';
+import { MirrorManager, MirrorExternalChangeError, resolveMirrorPath } from './mirror-io.js';
 
 interface ServerConfig {
   githubToken: string;
@@ -42,6 +43,7 @@ class RemoteMemoryMCPServer {
   private memoryManager: MemoryGraphManager;
   private githubClient!: GitHubClient;
   private syncManager!: SyncManager;
+  private mirror: MirrorManager | null = null;
   private autoPush = false;
 
   constructor() {
@@ -68,14 +70,56 @@ class RemoteMemoryMCPServer {
     this.syncManager = new SyncManager(this.githubClient, this.memoryManager);
     this.autoPush = config.autoPush ?? false;
 
+    // ─── LOCAL_MIRROR_PATH bootstrap (v2) ────────────────────────────────
+    // If set, attach MirrorManager so SyncManager mirrors active-project
+    // graph to disk on every mutation, and respects divergence guard on sync.
+    const mirrorPath = resolveMirrorPath();
+    if (mirrorPath) {
+      this.mirror = new MirrorManager(mirrorPath, this.memoryManager);
+      this.syncManager.setMirror(this.mirror);
+      console.error(`[remote-memory] LOCAL_MIRROR_PATH active: ${mirrorPath}`);
+    }
+
     try {
       console.error('Loading project index...');
       await this.syncManager.initializeProject(config.projectName);
       console.error(`Active project: ${this.syncManager.getActiveProject()}`);
 
-      console.error('Starting initial sync...');
-      await this.syncManager.pullFromRemote();
-      console.error('Initial sync completed');
+      // ─── Mirror initial seed ─────────────────────────────────────────────
+      // Priority:
+      //   1. mirror file exists AND its sidecar names the active project →
+      //      load mirror (graph-view's local edits take precedence over GitHub)
+      //   2. otherwise → GitHub pull, then seed mirror from in-memory
+      if (this.mirror) {
+        const baseline = await this.mirror.readBaseline();
+        const sameProject = baseline?.project === this.syncManager.getActiveProject();
+
+        if ((await this.mirror.exists()) && sameProject) {
+          try {
+            await this.mirror.loadIntoMemory();
+            console.error('[remote-memory] Loaded active project from mirror file');
+            await this.syncManager.loadBaseline();
+            // Edge case: mirror exists, sidecar names this project, but if
+            // there's been external GitHub change since baseline, the next
+            // sync_pull divergence guard will catch it. No bootstrap fetch.
+          } catch (error) {
+            console.error('[remote-memory] Mirror load failed, falling back to GitHub:', error);
+            await this.bootstrapFromGithub();
+            await this.safeMirrorSeed();
+          }
+        } else {
+          if (baseline && !sameProject) {
+            console.error(
+              `[remote-memory] Mirror sidecar names project '${baseline.project}' ` +
+              `but active is '${this.syncManager.getActiveProject()}' — rewriting mirror.`
+            );
+          }
+          await this.bootstrapFromGithub();
+          await this.safeMirrorSeed();
+        }
+      } else {
+        await this.bootstrapFromGithub();
+      }
     } catch (error) {
       console.error('Initialization failed, continuing:', error);
     }
@@ -84,6 +128,72 @@ class RemoteMemoryMCPServer {
       this.syncManager.startAutoSync(config.syncInterval);
     }
     console.error('Initialize completed');
+  }
+
+  private async bootstrapFromGithub(): Promise<void> {
+    console.error('Starting initial sync...');
+    await this.syncManager.pullFromRemote();
+    console.error('Initial sync completed');
+  }
+
+  /** Seed mirror file + sidecar from current in-memory state. Non-fatal. */
+  private async safeMirrorSeed(): Promise<void> {
+    if (!this.mirror) return;
+    try {
+      await this.mirror.writeMirror();
+      const sha = await this.syncManager.fetchRemoteSha();
+      if (sha !== null) {
+        await this.syncManager.captureBaseline(sha);
+      }
+      console.error('[remote-memory] Mirror seeded for active project');
+    } catch (e) {
+      console.error('[remote-memory] Mirror seed failed (non-fatal):', e);
+    }
+  }
+
+  /** Pre-tool hook: pick up external mirror writes (e.g. graph-view edits). */
+  private async ensureFresh(): Promise<void> {
+    if (!this.mirror) return;
+    try {
+      const changed = await this.mirror.maybeReload();
+      if (changed) {
+        console.error('[remote-memory] Mirror changed externally — reloaded in-memory graph');
+      }
+    } catch (e) {
+      console.error('[remote-memory] Mirror reload failed:', e);
+    }
+  }
+
+  /**
+   * Wrap an active-project mutation so the mirror file stays in sync.
+   * On mirror write failure (external change race), roll back the in-memory
+   * mutation and surface the error to the caller.
+   *
+   * IMPORTANT: only safe for the active project. Per-call project overrides
+   * use `withProject` instead — that path does its own pull/push and must
+   * not touch the mirror.
+   */
+  private async withActiveMirror<T>(action: () => T | Promise<T>): Promise<T> {
+    await this.ensureFresh();
+    if (!this.mirror) {
+      return await action();
+    }
+    const before = this.memoryManager.snapshot();
+    const result = await action();
+    try {
+      await this.mirror.writeMirror();
+    } catch (writeErr) {
+      this.memoryManager.restoreSnapshot(before);
+      if (writeErr instanceof MirrorExternalChangeError) {
+        throw new Error(
+          `Mirror file was modified externally during this operation; ` +
+          `in-memory change has been rolled back. Retry once the external writer ` +
+          `(likely graph-view) settles. Details: ${writeErr.message}`
+        );
+      }
+      throw writeErr;
+    }
+    return result;
   }
 
   private setupTools(): void {
@@ -462,26 +572,45 @@ class RemoteMemoryMCPServer {
   // ── CRUD Handlers ───────────────────────────────────────────────────────
   // project 파라미터가 현재 active project와 다르면 먼저 pull, 작업 후 push
 
-  private async withProject<T>(project: string | undefined, fn: () => T): Promise<T> {
+  /**
+   * Wrap a handler so it works against either the active project (mirror-aware)
+   * or a per-call project override (legacy temp-load behavior, mirror untouched).
+   *
+   * - opts.write = true  → mutation handlers
+   * - opts.write = false → read handlers
+   */
+  private async withProject<T>(
+    project: string | undefined,
+    opts: { write: boolean },
+    fn: () => T | Promise<T>
+  ): Promise<T> {
     const active = this.syncManager.getActiveProject();
+    const isActive = !project || project === active;
 
-    if (project && project !== active) {
-      // 임시로 해당 프로젝트 데이터를 로드
-      await this.syncManager.pullFromRemote(project);
+    if (isActive) {
+      if (opts.write) {
+        return await this.withActiveMirror(fn);
+      }
+      await this.ensureFresh();
+      return await fn();
     }
-    const result = fn();
-    if (project && project !== active) {
-      // 작업 후 push하고 active project 데이터 복구
+
+    // Per-call override on a non-active project: legacy temp-load path.
+    // Mirror/baseline are not touched because they belong to active project.
+    await this.syncManager.pullFromRemote(project);
+    const result = await fn();
+    if (opts.write) {
       await this.syncManager.pushToRemote(undefined, project);
-      await this.syncManager.pullFromRemote(); // active project 복구
     }
+    // Restore active-project in-memory state from GitHub (legacy behavior).
+    await this.syncManager.pullFromRemote();
     return result;
   }
 
   private async handleCreateEntities(args: any) {
     const project = resolveProject(args);
     const entities = parseArray(args.entities);
-    await this.withProject(project, () => this.memoryManager.createEntities(entities));
+    await this.withProject(project, { write: true }, () => this.memoryManager.createEntities(entities));
 
     if (this.autoPush) {
       const names = entities.map((e: any) => e.name).join(', ');
@@ -499,7 +628,7 @@ class RemoteMemoryMCPServer {
   private async handleCreateRelations(args: any) {
     const project = resolveProject(args);
     const relations = parseArray(args.relations);
-    await this.withProject(project, () => this.memoryManager.createRelations(relations));
+    await this.withProject(project, { write: true }, () => this.memoryManager.createRelations(relations));
     await this.syncWithMessage(`feat: Add ${relations.length} relations`, project);
 
     return this.ok({
@@ -513,7 +642,7 @@ class RemoteMemoryMCPServer {
   private async handleAddObservations(args: any) {
     const project = resolveProject(args);
     const observations = parseArray(args.observations);
-    await this.withProject(project, () => this.memoryManager.addObservations(observations));
+    await this.withProject(project, { write: true }, () => this.memoryManager.addObservations(observations));
 
     const total = observations.reduce((s: number, o: any) => s + parseArray(o.contents).length, 0);
     await this.syncWithMessage(`feat: Add ${total} observations to ${observations.length} entities`, project);
@@ -529,7 +658,7 @@ class RemoteMemoryMCPServer {
   private async handleDeleteEntities(args: any) {
     const project = resolveProject(args);
     const entityNames = parseArray(args.entityNames);
-    await this.withProject(project, () => this.memoryManager.deleteEntities(entityNames));
+    await this.withProject(project, { write: true }, () => this.memoryManager.deleteEntities(entityNames));
     await this.syncWithMessage(`fix: Delete ${entityNames.length} entities (${entityNames.join(', ')})`, project);
 
     return this.ok({
@@ -543,7 +672,7 @@ class RemoteMemoryMCPServer {
   private async handleDeleteObservations(args: any) {
     const project = resolveProject(args);
     const deletions = parseArray(args.deletions);
-    await this.withProject(project, () => this.memoryManager.deleteObservations(deletions));
+    await this.withProject(project, { write: true }, () => this.memoryManager.deleteObservations(deletions));
 
     const total = deletions.reduce((s: number, d: any) => s + parseArray(d.observations).length, 0);
     await this.syncWithMessage(`fix: Delete ${total} observations from ${deletions.length} entities`, project);
@@ -559,7 +688,7 @@ class RemoteMemoryMCPServer {
   private async handleDeleteRelations(args: any) {
     const project = resolveProject(args);
     const relations = parseArray(args.relations);
-    await this.withProject(project, () => this.memoryManager.deleteRelations(relations));
+    await this.withProject(project, { write: true }, () => this.memoryManager.deleteRelations(relations));
     await this.syncWithMessage(`fix: Delete ${relations.length} relations`, project);
 
     return this.ok({
@@ -576,7 +705,7 @@ class RemoteMemoryMCPServer {
   private async handleSearchNodes(args: any) {
     const project = resolveProject(args);
     let results;
-    await this.withProject(project, () => { results = this.memoryManager.searchNodes(args.query); });
+    await this.withProject(project, { write: false }, () => { results = this.memoryManager.searchNodes(args.query); });
 
     return this.ok({
       success: true,
@@ -591,7 +720,7 @@ class RemoteMemoryMCPServer {
     const project = resolveProject(args);
     const names = parseArray(args.names);
     let nodes;
-    await this.withProject(project, () => { nodes = this.memoryManager.getNodes(names); });
+    await this.withProject(project, { write: false }, () => { nodes = this.memoryManager.getNodes(names); });
 
     return this.ok({
       success: true,
@@ -606,7 +735,7 @@ class RemoteMemoryMCPServer {
   private async handleListEntities(args: any) {
     const project = resolveProject(args);
     let result;
-    await this.withProject(project, () => {
+    await this.withProject(project, { write: false }, () => {
       result = this.memoryManager.listEntities({
         entityType: args.entityType,
         sortBy: args.sortBy,
@@ -634,7 +763,7 @@ class RemoteMemoryMCPServer {
   private async handleGetEntityNames(args: any) {
     const project = resolveProject(args);
     let names;
-    await this.withProject(project, () => {
+    await this.withProject(project, { write: false }, () => {
       names = this.memoryManager.getEntityNames({
         entityType: args.entityType,
         sortBy: args.sortBy,
@@ -653,7 +782,7 @@ class RemoteMemoryMCPServer {
   private async handleGetEntityTypes(args: any) {
     const project = resolveProject(args);
     let types;
-    await this.withProject(project, () => { types = this.memoryManager.getEntityTypes(); });
+    await this.withProject(project, { write: false }, () => { types = this.memoryManager.getEntityTypes(); });
 
     return this.ok({
       success: true,
@@ -667,7 +796,7 @@ class RemoteMemoryMCPServer {
   private async handleReadGraph(args: any) {
     const project = resolveProject(args);
     let graph: any;
-    await this.withProject(project, () => { graph = this.memoryManager.getGraph(); });
+    await this.withProject(project, { write: false }, () => { graph = this.memoryManager.getGraph(); });
 
     return this.ok({
       entities: Object.fromEntries(graph.entities),

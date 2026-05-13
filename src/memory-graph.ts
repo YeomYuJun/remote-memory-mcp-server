@@ -255,6 +255,31 @@ export class MemoryGraphManager {
     };
   }
 
+  /**
+   * Capture a deep-copy of the current graph. Pair with `restoreSnapshot` for
+   * rollback when a mutation must be undone (e.g. mirror write conflict).
+   */
+  snapshot(): MemoryGraph {
+    const entities = new Map<string, Entity>();
+    for (const [k, v] of this.graph.entities) {
+      entities.set(k, { ...v, observations: [...v.observations] });
+    }
+    const relations = this.graph.relations.map(r => ({ ...r }));
+    return {
+      entities,
+      relations,
+      metadata: { ...this.graph.metadata },
+    };
+  }
+
+  restoreSnapshot(snap: MemoryGraph): void {
+    this.graph = {
+      entities: new Map(snap.entities),
+      relations: [...snap.relations],
+      metadata: { ...snap.metadata },
+    };
+  }
+
   private updateMetadata(): void {
     this.graph.metadata.lastModified = new Date().toISOString();
   }

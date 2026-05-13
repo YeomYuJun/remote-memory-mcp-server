@@ -23,6 +23,7 @@ A GitHub-integrated remote memory management MCP server that syncs knowledge gra
 - Backup functionality (per-project)
 - Commit history tracking
 - Optional auto-push (AUTO_PUSH environment variable)
+- **Local mirror mode** (v2): persist the active project's graph to a local JSONL file in anthropic-memory canonical format, so external tools (e.g. graph-view) can read and write it directly. Includes divergence guard for multi-PC safety.
 
 ## Installation
 
@@ -44,6 +45,7 @@ npm run build
 - `SYNC_INTERVAL`: Auto-sync interval in seconds (0 for manual)
 - `AUTO_PUSH`: Auto-push after CRUD operations (true/false, default: false)
 - `PROJECT_NAME`: Active project on startup (default: from `memory/index.json`, fallback: `"default"`)
+- `LOCAL_MIRROR_PATH`: Absolute path to a local JSONL mirror file (v2). When set, every mutation of the **active** project is mirrored to this file in anthropic-memory canonical format. External tools (e.g. graph-view) can read and write the same file. Unset = legacy behavior (in-memory + GitHub only).
 
 ## Claude Desktop Setup
 
@@ -106,6 +108,62 @@ read_graph({ project: "my-app" })
 ### Active Project Priority
 
 `PROJECT_NAME` env var → `memory/index.json` → `"default"`
+
+## Local Mirror Mode (v2)
+
+Set `LOCAL_MIRROR_PATH` to enable mirroring the **active project's** graph to a local JSONL file in anthropic-memory canonical format. External tools (e.g. graph-view) can read and write the same file, giving the user a UI on top of a remote-memory backed graph without graph-view needing to know about GitHub.
+
+### Behavior
+
+- **Bootstrap**: if the mirror file exists *and* its sidecar (`<mirror>.sync-state.json`) names the current active project, remote-memory loads from the mirror (preferring the user's local edits over GitHub). Otherwise, GitHub is pulled and the mirror is seeded.
+- **Before every tool call**: mirror mtime is checked; if it changed (external writer), the in-memory graph is reloaded from the mirror.
+- **After every mutation**: the in-memory graph is atomically written back to the mirror (`.tmp` + rename). If the file was modified externally during the operation (race), the in-memory mutation is rolled back and an error is surfaced.
+- **JSONL line format**: anthropic memory MCP compatible — `{"type":"entity"|"relation", ...}` with optional `createdAt`/`updatedAt` extension fields. Unknown fields are silently dropped on read.
+- **Per-call `project` override** (e.g. `read_graph({ project: "blog" })`) does **not** touch the mirror — the mirror always represents the active project.
+- **`switch_project`** rewrites the mirror with the new active project's graph and updates the sidecar.
+
+### Divergence Guard (multi-PC safety)
+
+When the same GitHub repo is shared across multiple machines, `sync_pull` / `sync_push` follow this policy (active project only):
+
+| State | `sync_pull` result |
+|---|---|
+| Only GitHub changed | normal pull, mirror updated (status: `pulled`) |
+| Only local changed | pull skipped, suggest `sync_push` (status: `local-only`) |
+| Both changed (divergence) | **pull refused**, choose with `force_sync` (status: `diverged`) |
+| Neither changed | no-op (status: `up-to-date`) |
+
+`sync_push` applies the same baseline check — if GitHub advanced since the last sync, the push is refused (`remote-ahead`). `force_sync` is the escape hatch and bypasses both guards.
+
+The baseline (last-pull SHA + graph digest + project name) is persisted to the sidecar file (`<LOCAL_MIRROR_PATH>.sync-state.json`) so it survives process restarts. **The sidecar is owned by remote-memory; external tools must not modify it.**
+
+### graph-view integration example
+
+```json
+{
+  "mcpServers": {
+    "remote-memory": {
+      "command": "node",
+      "args": ["C:/YOUR_PATH/remote-memory-mcp/dist/index.js"],
+      "env": {
+        "GITHUB_TOKEN": "ghp_...",
+        "GITHUB_OWNER": "...",
+        "GITHUB_REPO": "...",
+        "LOCAL_MIRROR_PATH": "D:/memory/memory.jsonl"
+      }
+    },
+    "graph-view": {
+      "command": "node",
+      "args": ["D:/mcpapps/graph-view/dist/server.js"],
+      "env": {
+        "MEMORY_FILE_PATH": "D:/memory/memory.jsonl"
+      }
+    }
+  }
+}
+```
+
+graph-view auto-detects `LOCAL_MIRROR_PATH` (via env or `mcpServers.remote-memory.env`) and switches to mirror backend automatically.
 
 ## Data Structure
 
