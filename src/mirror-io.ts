@@ -42,6 +42,13 @@ export class MirrorExternalChangeError extends Error {
   }
 }
 
+export class MirrorParseError extends Error {
+  constructor(public line: number, public cause: string) {
+    super(`Mirror parse failed at line ${line}: ${cause}`);
+    this.name = 'MirrorParseError';
+  }
+}
+
 interface ParsedGraph {
   entities: Map<string, Entity>;
   relations: Relation[];
@@ -60,7 +67,7 @@ function parseJsonl(text: string): ParsedGraph {
     try {
       parsed = JSON.parse(raw);
     } catch (e) {
-      throw new Error(`Mirror parse failed at line ${i + 1}: ${(e as Error).message}`);
+      throw new MirrorParseError(i + 1, (e as Error).message);
     }
     if (parsed?.type === 'entity') {
       const name = String(parsed.name ?? '');

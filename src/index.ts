@@ -12,7 +12,7 @@ import {
 import { GitHubClient, GitHubConfig } from './github-client.js';
 import { MemoryGraphManager } from './memory-graph.js';
 import { SyncManager } from './sync-manager.js';
-import { MirrorManager, MirrorExternalChangeError, resolveMirrorPath } from './mirror-io.js';
+import { MirrorManager, MirrorExternalChangeError, MirrorParseError, resolveMirrorPath } from './mirror-io.js';
 
 interface ServerConfig {
   githubToken: string;
@@ -160,6 +160,17 @@ class RemoteMemoryMCPServer {
         console.error('[remote-memory] Mirror changed externally — reloaded in-memory graph');
       }
     } catch (e) {
+      // Parse errors mean the mirror file is corrupted — continuing would
+      // silently feed the user stale in-memory data while the on-disk file is
+      // unreadable. Surface this so the caller (and the user) know to fix it.
+      if (e instanceof MirrorParseError) {
+        throw new Error(
+          `Mirror file is corrupted and cannot be parsed: ${e.message}. ` +
+          `Fix or remove the file, or call force_sync to overwrite it with GitHub state.`
+        );
+      }
+      // Other reload failures (missing file, transient IO) are non-fatal —
+      // the next mutation's writeMirror will recreate/retry as needed.
       console.error('[remote-memory] Mirror reload failed:', e);
     }
   }
@@ -456,10 +467,18 @@ class RemoteMemoryMCPServer {
         },
         {
           name: 'force_sync',
-          description: '강제로 양방향 동기화를 수행합니다',
+          description:
+            'divergence guard를 우회하여 한쪽을 강제로 채택합니다. ' +
+            'direction="remote"(기본): GitHub의 상태로 로컬을 덮어씀. ' +
+            'direction="local": 로컬 상태로 GitHub을 덮어씀 (push만 수행).',
           inputSchema: {
             type: 'object',
             properties: {
+              direction: {
+                type: 'string',
+                enum: ['remote', 'local'],
+                description: '어느 쪽을 채택할지 (기본: remote)',
+              },
               project: { type: 'string', description: '대상 프로젝트 (생략 시 현재 활성 프로젝트)' },
             },
           },
@@ -578,10 +597,13 @@ class RemoteMemoryMCPServer {
    *
    * - opts.write = true  → mutation handlers
    * - opts.write = false → read handlers
+   * - opts.commitMessage → only used for non-active write path, which MUST push
+   *   immediately (the in-memory state is wiped right after by the
+   *   active-project restore).
    */
   private async withProject<T>(
     project: string | undefined,
-    opts: { write: boolean },
+    opts: { write: boolean; commitMessage?: string },
     fn: () => T | Promise<T>
   ): Promise<T> {
     const active = this.syncManager.getActiveProject();
@@ -597,10 +619,12 @@ class RemoteMemoryMCPServer {
 
     // Per-call override on a non-active project: legacy temp-load path.
     // Mirror/baseline are not touched because they belong to active project.
+    // Writes MUST commit before we restore active-project state — otherwise
+    // the change is lost. This path is independent of autoPush.
     await this.syncManager.pullFromRemote(project);
     const result = await fn();
     if (opts.write) {
-      await this.syncManager.pushToRemote(undefined, project);
+      await this.syncManager.pushToRemote(opts.commitMessage, project);
     }
     // Restore active-project in-memory state from GitHub (legacy behavior).
     await this.syncManager.pullFromRemote();
@@ -610,12 +634,13 @@ class RemoteMemoryMCPServer {
   private async handleCreateEntities(args: any) {
     const project = resolveProject(args);
     const entities = parseArray(args.entities);
-    await this.withProject(project, { write: true }, () => this.memoryManager.createEntities(entities));
+    const names = entities.map((e: any) => e.name).join(', ');
+    const commitMessage = `feat: Add ${entities.length} entities (${names})`;
 
-    if (this.autoPush) {
-      const names = entities.map((e: any) => e.name).join(', ');
-      await this.syncWithMessage(`feat: Add ${entities.length} entities (${names})`, project);
-    }
+    await this.withProject(project, { write: true, commitMessage }, () =>
+      this.memoryManager.createEntities(entities)
+    );
+    await this.syncWithMessage(commitMessage, project);
 
     return this.ok({
       success: true,
@@ -628,8 +653,12 @@ class RemoteMemoryMCPServer {
   private async handleCreateRelations(args: any) {
     const project = resolveProject(args);
     const relations = parseArray(args.relations);
-    await this.withProject(project, { write: true }, () => this.memoryManager.createRelations(relations));
-    await this.syncWithMessage(`feat: Add ${relations.length} relations`, project);
+    const commitMessage = `feat: Add ${relations.length} relations`;
+
+    await this.withProject(project, { write: true, commitMessage }, () =>
+      this.memoryManager.createRelations(relations)
+    );
+    await this.syncWithMessage(commitMessage, project);
 
     return this.ok({
       success: true,
@@ -642,10 +671,13 @@ class RemoteMemoryMCPServer {
   private async handleAddObservations(args: any) {
     const project = resolveProject(args);
     const observations = parseArray(args.observations);
-    await this.withProject(project, { write: true }, () => this.memoryManager.addObservations(observations));
-
     const total = observations.reduce((s: number, o: any) => s + parseArray(o.contents).length, 0);
-    await this.syncWithMessage(`feat: Add ${total} observations to ${observations.length} entities`, project);
+    const commitMessage = `feat: Add ${total} observations to ${observations.length} entities`;
+
+    await this.withProject(project, { write: true, commitMessage }, () =>
+      this.memoryManager.addObservations(observations)
+    );
+    await this.syncWithMessage(commitMessage, project);
 
     return this.ok({
       success: true,
@@ -658,8 +690,12 @@ class RemoteMemoryMCPServer {
   private async handleDeleteEntities(args: any) {
     const project = resolveProject(args);
     const entityNames = parseArray(args.entityNames);
-    await this.withProject(project, { write: true }, () => this.memoryManager.deleteEntities(entityNames));
-    await this.syncWithMessage(`fix: Delete ${entityNames.length} entities (${entityNames.join(', ')})`, project);
+    const commitMessage = `fix: Delete ${entityNames.length} entities (${entityNames.join(', ')})`;
+
+    await this.withProject(project, { write: true, commitMessage }, () =>
+      this.memoryManager.deleteEntities(entityNames)
+    );
+    await this.syncWithMessage(commitMessage, project);
 
     return this.ok({
       success: true,
@@ -672,10 +708,13 @@ class RemoteMemoryMCPServer {
   private async handleDeleteObservations(args: any) {
     const project = resolveProject(args);
     const deletions = parseArray(args.deletions);
-    await this.withProject(project, { write: true }, () => this.memoryManager.deleteObservations(deletions));
-
     const total = deletions.reduce((s: number, d: any) => s + parseArray(d.observations).length, 0);
-    await this.syncWithMessage(`fix: Delete ${total} observations from ${deletions.length} entities`, project);
+    const commitMessage = `fix: Delete ${total} observations from ${deletions.length} entities`;
+
+    await this.withProject(project, { write: true, commitMessage }, () =>
+      this.memoryManager.deleteObservations(deletions)
+    );
+    await this.syncWithMessage(commitMessage, project);
 
     return this.ok({
       success: true,
@@ -688,8 +727,12 @@ class RemoteMemoryMCPServer {
   private async handleDeleteRelations(args: any) {
     const project = resolveProject(args);
     const relations = parseArray(args.relations);
-    await this.withProject(project, { write: true }, () => this.memoryManager.deleteRelations(relations));
-    await this.syncWithMessage(`fix: Delete ${relations.length} relations`, project);
+    const commitMessage = `fix: Delete ${relations.length} relations`;
+
+    await this.withProject(project, { write: true, commitMessage }, () =>
+      this.memoryManager.deleteRelations(relations)
+    );
+    await this.syncWithMessage(commitMessage, project);
 
     return this.ok({
       success: true,
@@ -828,8 +871,14 @@ class RemoteMemoryMCPServer {
 
   private async handleForceSync(args: any) {
     const project = resolveProject(args);
-    const result = await this.syncManager.forceSync(project);
-    return this.ok({ operation: 'force_sync', ...result, project: project ?? this.syncManager.getActiveProject() });
+    const direction = args?.direction === 'local' ? 'local' : 'remote';
+    const result = await this.syncManager.forceSync(project, { direction });
+    return this.ok({
+      operation: 'force_sync',
+      direction,
+      ...result,
+      project: project ?? this.syncManager.getActiveProject(),
+    });
   }
 
   private async handleCreateBackup(args: any) {
@@ -872,6 +921,10 @@ class RemoteMemoryMCPServer {
 
   private async syncWithMessage(message: string, project?: string): Promise<void> {
     if (!this.autoPush) return;
+    // Non-active project writes have already been pushed inside withProject —
+    // pushing again here would be a duplicate commit.
+    const isActive = !project || project === this.syncManager.getActiveProject();
+    if (!isActive) return;
     try {
       await this.syncManager.pushToRemote(message, project);
     } catch (error) {

@@ -204,11 +204,23 @@ export class SyncManager {
 
     // Mirror now must reflect the new active project. Write the current
     // (possibly empty) graph and re-capture baseline.
+    //
+    // If the mirror write fails we MUST surface that — GitHub's index.json and
+    // in-memory state have already been updated, so silently leaving a stale
+    // mirror would mean the next maybeReload overwrites the just-loaded graph
+    // with the previous project's data. The baseline is NOT updated in this
+    // case, so the next sync_pull will correctly detect the inconsistency.
     if (this.mirror) {
       try {
         await this.mirror.writeMirror();
       } catch (e) {
-        console.error('[sync-manager] Mirror write after switch_project failed:', e);
+        const msg = e instanceof Error ? e.message : String(e);
+        throw new Error(
+          `Switched active project to '${projectName}' on GitHub and in-memory, ` +
+          `but mirror file write failed: ${msg}. The mirror file is stale ` +
+          `(still reflects the previous project). Resolve the file-system issue ` +
+          `and call switch_project again, or call sync_pull to reload from GitHub.`
+        );
       }
       const remoteSha = remoteFile?.sha ?? '';
       await this.persistBaseline({
@@ -417,17 +429,12 @@ export class SyncManager {
 
       const content = JSON.stringify(localData, null, 2);
       const defaultMessage = `Update memory graph - ${now()}`;
-      await this.githubClient.putFile(
+      const putResult = await this.githubClient.putFile(
         { path: filePath, content, sha: existingFile?.sha },
         commitMessage || defaultMessage
       );
 
-      // Refetch SHA to update baseline (Octokit putFile is void in our wrapper).
-      let newSha = '';
-      if (isActive && this.mirror) {
-        const afterPush = await this.githubClient.getFile(filePath);
-        newSha = afterPush?.sha ?? '';
-      }
+      const newSha = putResult.sha;
 
       // Update last-sync metadata
       const graph = this.memoryManager.getGraph();
@@ -485,10 +492,22 @@ export class SyncManager {
   }
 
   /**
-   * Escape hatch: pull (force) then push (force). Bypasses divergence guard.
-   * Use after a 'diverged' status when the user has decided how to resolve.
+   * Escape hatch: bypass the divergence guard by explicitly choosing which side
+   * to keep. Use after a 'diverged' status when the user has decided.
+   *
+   * - direction='remote' (default): GitHub wins. Pull(force) replaces local;
+   *   then push(force) so metadata.lastSync + baseline reflect the synced state.
+   * - direction='local': local wins. Push(force) overwrites GitHub with the
+   *   current in-memory state. No pull — local must not be replaced.
    */
-  async forceSync(project?: string): Promise<SyncResult> {
+  async forceSync(
+    project?: string,
+    opts: { direction?: 'remote' | 'local' } = {}
+  ): Promise<SyncResult> {
+    const direction = opts.direction ?? 'remote';
+    if (direction === 'local') {
+      return await this.pushToRemote(undefined, project, { force: true });
+    }
     const pullResult = await this.pullFromRemote(project, { force: true });
     if (pullResult.success) {
       return await this.pushToRemote(undefined, project, { force: true });

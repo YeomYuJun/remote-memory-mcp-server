@@ -293,13 +293,38 @@ export class MemoryGraphManager {
   }
 
   fromJSON(data: any): void {
+    // Backfill timestamps when missing — older payloads or graph-view writes can
+    // omit createdAt/updatedAt. Without this, listEntities() sort breaks with
+    // `undefined.localeCompare(undefined)` and consumers see TypeError.
+    const now = new Date().toISOString();
+    const entities = new Map<string, Entity>();
+    for (const [key, raw] of Object.entries((data.entities ?? {}) as Record<string, any>)) {
+      const e = raw ?? {};
+      entities.set(key, {
+        name: typeof e.name === 'string' && e.name ? e.name : key,
+        entityType: typeof e.entityType === 'string' ? e.entityType : 'unknown',
+        observations: Array.isArray(e.observations)
+          ? e.observations.map((x: unknown) => String(x))
+          : [],
+        createdAt: typeof e.createdAt === 'string' ? e.createdAt : now,
+        updatedAt: typeof e.updatedAt === 'string' ? e.updatedAt : now,
+      });
+    }
+    const relations: Relation[] = Array.isArray(data.relations)
+      ? data.relations.map((r: any) => ({
+          from: String(r?.from ?? ''),
+          to: String(r?.to ?? ''),
+          relationType: String(r?.relationType ?? ''),
+          createdAt: typeof r?.createdAt === 'string' ? r.createdAt : now,
+        }))
+      : [];
     this.graph = {
-      entities: new Map(Object.entries(data.entities || {})),
-      relations: data.relations || [],
+      entities,
+      relations,
       metadata: data.metadata || {
         version: '1.0.0',
-        lastModified: new Date().toISOString(),
-        lastSync: new Date().toISOString(),
+        lastModified: now,
+        lastSync: now,
       },
     };
   }

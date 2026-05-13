@@ -50,10 +50,10 @@ export class GitHubClient {
     }
   }
 
-  async putFile(file: GitHubFile, message: string): Promise<void> {
+  async putFile(file: GitHubFile, message: string): Promise<{ sha: string }> {
     const content = Base64.encode(file.content);
-    
-    await this.octokit.rest.repos.createOrUpdateFileContents({
+
+    const response = await this.octokit.rest.repos.createOrUpdateFileContents({
       owner: this.config.owner,
       repo: this.config.repo,
       path: file.path,
@@ -62,6 +62,9 @@ export class GitHubClient {
       branch: this.config.branch,
       sha: file.sha,
     });
+    // The new blob SHA is on `content.sha` in the v3 response. Fall back to ''
+    // only if the API ever omits it (shouldn't happen for create/update success).
+    return { sha: response.data.content?.sha ?? '' };
   }
 
   async listFiles(directory: string = ''): Promise<string[]> {
